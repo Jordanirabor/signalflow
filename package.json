@@ -1,0 +1,38 @@
+{
+  "name": "signalflow-gtm-engine",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "googleapis": "^171.4.0",
+    "next": "16.2.3",
+    "node-cron": "^4.2.1",
+    "openai": "^6.34.0",
+    "pg": "^8.20.0",
+    "playwright": "^1.59.1",
+    "posthog-js": "^1.367.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "fast-check": "^4.6.0",
+    "prettier": "^3.8.2",
+    "typescript": "^5",
+    "vitest": "^4.1.4"
+  }
+}
