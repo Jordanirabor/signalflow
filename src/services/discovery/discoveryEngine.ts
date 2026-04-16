@@ -162,20 +162,16 @@ export function isValidPersonName(name: string): boolean {
 
   const trimmed = name.trim();
 
-  // Must have at least two words (first + last name)
-  const words = trimmed.split(/\s+/).filter((w) => w.length > 0);
-  if (words.length < 2) return false;
-
-  // Reject obvious company name patterns
-  const companyPatterns =
-    /\b(inc\.?|llc|ltd\.?|corp\.?|co\.?|gmbh|plc|limited|technologies|solutions|software|consulting|global|group|services|design|systems|headquarters|partners)\b/i;
-  if (companyPatterns.test(trimmed)) return false;
-
-  // Reject if name is too long (likely a company name or tagline)
+  // Reject if name is too long (likely a tagline or sentence)
   if (trimmed.length > 60) return false;
 
-  // Reject if it contains special characters common in company names but not person names
-  if (/[&@#]/.test(trimmed)) return false;
+  // Reject obvious company name patterns
+  const companyPatterns = /\b(inc\.?|llc|ltd\.?|corp\.?|gmbh|plc|limited|headquarters)\b/i;
+  if (companyPatterns.test(trimmed)) return false;
+
+  // Must have at least one word with 2+ characters
+  const words = trimmed.split(/\s+/).filter((w) => w.length > 1);
+  if (words.length < 1) return false;
 
   return true;
 }
@@ -189,14 +185,21 @@ export function isValidPersonName(name: string): boolean {
  */
 export function filterValidLeads(leads: DiscoveredLeadData[]): DiscoveredLeadData[] {
   return leads.filter((lead) => {
-    // Must have a company
-    if (!lead.company || !lead.company.trim()) return false;
-
     // Must have a valid person name
-    if (!isValidPersonName(lead.name)) return false;
+    if (!isValidPersonName(lead.name)) {
+      console.log(
+        `[DiscoveryEngine] Filtered out invalid name: "${lead.name}" (source: ${lead.discoverySource})`,
+      );
+      return false;
+    }
 
     // Name must not be the same as company (maps scraper artifact)
-    if (lead.name.trim().toLowerCase() === lead.company.trim().toLowerCase()) return false;
+    if (lead.company && lead.name.trim().toLowerCase() === lead.company.trim().toLowerCase()) {
+      console.log(
+        `[DiscoveryEngine] Filtered out name=company: "${lead.name}" (source: ${lead.discoverySource})`,
+      );
+      return false;
+    }
 
     return true;
   });

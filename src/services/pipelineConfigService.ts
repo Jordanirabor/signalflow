@@ -37,7 +37,7 @@ const DEFAULTS: PipelineConfig = {
   businessDays: [1, 2, 3, 4, 5],
   timezone: 'America/New_York',
   dailyDiscoveryCap: 50,
-  minLeadScore: 50,
+  minLeadScore: 10,
   maxFollowUps: 3,
   sequenceCadenceDays: [3, 5, 7],
   tonePreference: 'professional',
@@ -95,10 +95,10 @@ export function validatePipelineConfig(config: Partial<PipelineConfig>): Pipelin
   if (config.minLeadScore !== undefined) {
     if (
       !Number.isInteger(config.minLeadScore) ||
-      config.minLeadScore < 30 ||
+      config.minLeadScore < 0 ||
       config.minLeadScore > 90
     ) {
-      errors.minLeadScore = 'minLeadScore must be an integer between 30 and 90';
+      errors.minLeadScore = 'minLeadScore must be an integer between 0 and 90';
     }
   }
 

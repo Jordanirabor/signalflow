@@ -124,12 +124,18 @@ async function executeDiscoveryStage(founderId: string): Promise<StageResult> {
     // Skip duplicates by name and company
     const duplicate = await findDuplicate(founderId, prospect.name, prospect.company);
     if (duplicate) {
+      console.log(
+        `[PipelineOrchestrator] Skipping duplicate: "${prospect.name}" (${prospect.company})`,
+      );
       continue;
     }
 
     // The prospect already has a score from discoverLeadsMultiICP
     // But we filter by minimum score threshold
     if (prospect.score < config.minLeadScore) {
+      console.log(
+        `[PipelineOrchestrator] Skipping low score: "${prospect.name}" score=${prospect.score} < min=${config.minLeadScore}`,
+      );
       continue;
     }
 
@@ -165,8 +171,14 @@ async function executeDiscoveryStage(founderId: string): Promise<StageResult> {
         scoreResult.totalScore,
         scoreResult.breakdown,
       );
-    } catch {
-      // Skip on creation errors (e.g. constraint violations)
+      console.log(
+        `[PipelineOrchestrator] Created lead: "${lead.name}" (${lead.company}) score=${lead.leadScore}`,
+      );
+    } catch (err) {
+      console.error(
+        `[PipelineOrchestrator] Failed to create lead "${prospect.name}":`,
+        err instanceof Error ? err.message : String(err),
+      );
       continue;
     }
 

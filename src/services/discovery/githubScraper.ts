@@ -35,7 +35,8 @@ const TECHNICAL_ROLE_KEYWORDS = ['engineer', 'cto', 'developer', 'architect', 't
  * Exported for property-based testing (Property 7).
  */
 export function isProfileComplete(profile: { displayName: string; company: string }): boolean {
-  return profile.displayName.trim().length > 0 && profile.company.trim().length > 0;
+  // Only require a name — company can be researched later
+  return profile.displayName.trim().length > 0;
 }
 
 /**
@@ -211,12 +212,11 @@ export const githubScraper: SourceAdapter = {
       return [];
     }
 
-    // Only activate for technical roles
+    // Log non-technical roles but still attempt discovery
     if (!isTechnicalRole(icp.targetRole)) {
       console.log(
-        `[GitHubScraper] Target role "${icp.targetRole}" is not technical, skipping GitHub discovery`,
+        `[GitHubScraper] Target role "${icp.targetRole}" is not typically technical, but attempting GitHub discovery anyway`,
       );
-      return [];
     }
 
     const githubQueries = queries.filter((q) => q.vector === 'github');

@@ -198,13 +198,24 @@ export async function discoverAndEnrichLeads(founderId: string): Promise<Lead[]>
         icpProfileId: prospect.icpProfileId,
       };
 
+      console.log(
+        `[EnrichmentService] Attempting to create lead: name="${input.name}", company="${input.company}", role="${input.role}", founderId="${founderId}"`,
+      );
+
       let lead: Lead;
       try {
         lead = await createLead(input, scoreResult.totalScore, scoreResult.breakdown);
-      } catch {
-        // Skip duplicates or other creation errors
+      } catch (err) {
+        console.error(
+          `[EnrichmentService] Failed to create lead "${input.name}" (${input.company}):`,
+          err instanceof Error ? err.message : String(err),
+        );
         continue;
       }
+
+      console.log(
+        `[EnrichmentService] Created lead "${lead.name}" (${lead.company}) with score ${lead.leadScore}`,
+      );
 
       // Enrich the lead
       const enrichResult = await enrichLead(lead.name, lead.company);

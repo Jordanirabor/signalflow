@@ -241,10 +241,46 @@ function searchResultToLead(result: SerperOrganicResult, icp: ICP): DiscoveredLe
   const handle = extractHandleFromUrl(result.link);
   if (!handle) return null;
 
-  // Google titles for Twitter profiles are usually "Display Name (@handle) / X"
-  const titleMatch = result.title.match(/^(.+?)\s*[\(\(@]/);
-  const displayName = titleMatch?.[1]?.trim() || result.title.split('/')[0]?.trim() || '';
+  // Google titles for Twitter profiles are usually:
+  //   "Display Name (@handle) / X"
+  //   "Display Name (@handle) on X"
+  //   "Display Name on X: \"tweet text\""
+  let displayName = '';
 
+  // Try pattern: "Name (@handle)"
+  const handlePattern = new RegExp(`^(.+?)\\s*[\\(\\(@]${handle}`, 'i');
+  const handleMatch = result.title.match(handlePattern);
+  if (handleMatch) {
+    displayName = handleMatch[1].trim();
+  }
+
+  // Try pattern: "Name / X" or "Name on X"
+  if (!displayName) {
+    const slashMatch = result.title.match(/^(.+?)\s*(?:\/|on)\s*X\b/i);
+    if (slashMatch) {
+      const candidate = slashMatch[1].trim();
+      // Only use if it's short enough to be a name (not a tweet)
+      if (candidate.length <= 40) {
+        displayName = candidate;
+      }
+    }
+  }
+
+  // Fallback: use the part before any separator, but only if short
+  if (!displayName) {
+    const firstPart = result.title.split(/[/|–—-]/)[0]?.trim() || '';
+    if (firstPart.length <= 40 && firstPart.length > 0) {
+      displayName = firstPart;
+    }
+  }
+
+  if (!displayName) return null;
+
+  // Clean up: remove trailing parentheses, brackets, pipes, dashes
+  displayName = displayName.replace(/[\(\)\[\]|]+$/, '').trim();
+
+  // Reject names that look like tweet text (too long, contain sentences)
+  if (displayName.length > 50 || displayName.includes('...')) return null;
   if (!displayName) return null;
 
   // The snippet is typically the bio text from the profile
@@ -254,8 +290,7 @@ function searchResultToLead(result: SerperOrganicResult, icp: ICP): DiscoveredLe
   const company = inferCompanyFromBio(bio) || '';
 
   if (!company) {
-    console.log(`[TwitterScraper] Skipping profile without company: @${handle} (${displayName})`);
-    return null;
+    console.log(`[TwitterScraper] Profile without company (keeping): @${handle} (${displayName})`);
   }
 
   const industry = inferIndustryFromContent(bio, []) || icp.industry;

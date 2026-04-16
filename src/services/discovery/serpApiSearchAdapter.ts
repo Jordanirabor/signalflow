@@ -128,8 +128,9 @@ export const serpApiSearchAdapter: SourceAdapter = {
             const name = extractNameFromSnippet(result.snippet);
             if (!name) continue;
 
-            // Extract headline from snippet
+            // Extract headline from snippet — often contains "Role at Company"
             let headline = '';
+            let company = '';
             for (const sep of [' - ', ' – ', ' — ', ' | ']) {
               const idx = result.snippet.indexOf(sep);
               if (idx > 0) {
@@ -138,10 +139,16 @@ export const serpApiSearchAdapter: SourceAdapter = {
               }
             }
 
+            // Try to extract company from "Role at Company" pattern in headline
+            const atMatch = headline.match(/\bat\s+(.+?)(?:\s*[·|–—-]|$)/i);
+            if (atMatch) {
+              company = atMatch[1].trim();
+            }
+
             leads.push({
               name,
               role: headline || icp.targetRole,
-              company: '',
+              company,
               industry: icp.industry,
               geography: icp.geography,
               discoverySource: 'serp_api_search',
