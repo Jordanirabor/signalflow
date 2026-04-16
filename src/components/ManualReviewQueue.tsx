@@ -1,6 +1,11 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { ManualReviewItem, ResponseClassification } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -27,23 +32,42 @@ function classificationLabel(c: ResponseClassification): string {
   }
 }
 
-function confidenceColor(confidence: number): string {
-  if (confidence >= 0.7) return 'confidence-high';
-  if (confidence >= 0.4) return 'confidence-medium';
-  return 'confidence-low';
+function classificationVariant(
+  c: ResponseClassification,
+): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (c) {
+    case 'interested':
+      return 'default';
+    case 'not_interested':
+      return 'destructive';
+    case 'objection':
+      return 'destructive';
+    case 'question':
+      return 'secondary';
+    case 'out_of_office':
+      return 'outline';
+  }
+}
+
+function confidenceVariant(confidence: number): 'default' | 'secondary' | 'outline' {
+  if (confidence >= 0.7) return 'default';
+  if (confidence >= 0.4) return 'secondary';
+  return 'outline';
 }
 
 export default function ManualReviewQueue() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [items, setItems] = useState<ManualReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resolvingIds, setResolvingIds] = useState<Set<string>>(new Set());
 
   const fetchReviewQueue = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/pipeline/review?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/pipeline/review');
       if (!res.ok) {
         const err = await res.json();
         setError(err.message ?? 'Failed to load review queue');
@@ -56,7 +80,7 @@ export default function ManualReviewQueue() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetchReviewQueue();
@@ -90,84 +114,110 @@ export default function ManualReviewQueue() {
     [],
   );
 
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="review-queue-loading" role="status" aria-live="polite">
-        Loading review queue...
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-56" />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} className="h-40" />
+        ))}
       </div>
     );
   }
 
-  if (error) {
+  if (error && items.length === 0) {
     return (
-      <div className="review-queue-error" role="alert">
-        <p>{error}</p>
-        <button type="button" className="action-btn" onClick={fetchReviewQueue}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchReviewQueue}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <div className="manual-review-queue">
-      <h2>Manual Review Queue</h2>
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">Manual Review Queue</h2>
+
+      {error && (
+        <Alert variant="destructive" role="alert">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {items.length === 0 ? (
-        <p className="empty-state">No items pending manual review.</p>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <p className="text-muted-foreground">No items pending manual review.</p>
+          </CardContent>
+        </Card>
       ) : (
-        <ul className="review-list" aria-label="Manual review items">
+        <ul className="space-y-4" aria-label="Manual review items">
           {items.map((item) => {
             const isResolving = resolvingIds.has(item.replyId);
             return (
-              <li key={item.replyId} className="review-item">
-                <div className="review-item-header">
-                  <span className="review-lead-name">{item.leadName}</span>
-                  <span className="review-company">{item.company}</span>
-                  <span className="review-date">
-                    {new Date(item.receivedAt).toLocaleDateString(undefined, {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                </div>
+              <li key={item.replyId}>
+                <Card>
+                  <CardHeader>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <CardTitle className="text-base">{item.leadName}</CardTitle>
+                      <span className="text-sm text-muted-foreground">{item.company}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(item.receivedAt).toLocaleDateString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <blockquote className="border-l-2 pl-4 text-sm italic text-muted-foreground">
+                      {item.replyText}
+                    </blockquote>
 
-                <blockquote className="review-reply-text">{item.replyText}</blockquote>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={classificationVariant(item.suggestedClassification)}>
+                        {classificationLabel(item.suggestedClassification)}
+                      </Badge>
+                      <Badge variant={confidenceVariant(item.confidence)}>
+                        {(item.confidence * 100).toFixed(0)}% confidence
+                      </Badge>
+                    </div>
 
-                <div className="review-classification-info">
-                  <span
-                    className={`classification-badge classification-${item.suggestedClassification}`}
-                  >
-                    {classificationLabel(item.suggestedClassification)}
-                  </span>
-                  <span className={`confidence-score ${confidenceColor(item.confidence)}`}>
-                    {(item.confidence * 100).toFixed(0)}% confidence
-                  </span>
-                </div>
-
-                <div className="review-actions" role="group" aria-label="Classification actions">
-                  <button
-                    type="button"
-                    className="action-btn action-confirm"
-                    disabled={isResolving}
-                    onClick={() => resolveItem(item.replyId, item.suggestedClassification)}
-                  >
-                    Confirm
-                  </button>
-                  {CLASSIFICATIONS.filter((c) => c !== item.suggestedClassification).map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className="action-btn action-override"
-                      disabled={isResolving}
-                      onClick={() => resolveItem(item.replyId, c)}
+                    <div
+                      className="flex flex-wrap gap-2"
+                      role="group"
+                      aria-label="Classification actions"
                     >
-                      {classificationLabel(c)}
-                    </button>
-                  ))}
-                </div>
+                      <Button
+                        size="sm"
+                        disabled={isResolving}
+                        onClick={() => resolveItem(item.replyId, item.suggestedClassification)}
+                      >
+                        Confirm
+                      </Button>
+                      {CLASSIFICATIONS.filter((c) => c !== item.suggestedClassification).map(
+                        (c) => (
+                          <Button
+                            key={c}
+                            variant="outline"
+                            size="sm"
+                            disabled={isResolving}
+                            onClick={() => resolveItem(item.replyId, c)}
+                          >
+                            {classificationLabel(c)}
+                          </Button>
+                        ),
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
               </li>
             );
           })}

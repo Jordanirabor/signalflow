@@ -1,26 +1,31 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
-import type { ApiError, CRMStatus } from '@/types';
-import { CRM_PIPELINE_ORDER } from '@/types';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useSession } from '@/hooks/useSession';
+import type { CRMStatus } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
-const PIPELINE_STATUSES: CRMStatus[] = ['New', 'Contacted', 'Replied', 'Booked', 'Closed'];
 
 interface PipelineLead {
   id: string;
-  founderId: string;
   name: string;
   role: string;
   company: string;
-  industry?: string;
-  geography?: string;
   leadScore: number;
-  scoreBreakdown: { icpMatch: number; roleRelevance: number; intentSignals: number };
-  enrichmentStatus: 'pending' | 'complete' | 'partial';
   crmStatus: CRMStatus;
-  createdAt: string;
-  updatedAt: string;
-  lastActivity: string;
+  updatedAt: Date;
 }
 
 interface PipelineView {
@@ -28,36 +33,39 @@ interface PipelineView {
   leads: PipelineLead[];
 }
 
-interface Filters {
-  status: string;
-  minScore: string;
-  maxScore: string;
-  lastActivityAfter: string;
+const CRM_STATUSES: CRMStatus[] = ['New', 'Contacted', 'Replied', 'Booked', 'Closed'];
+
+function statusBadgeVariant(
+  status: CRMStatus,
+): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (status) {
+    case 'Booked':
+    case 'Closed':
+      return 'default';
+    case 'Replied':
+      return 'secondary';
+    case 'Contacted':
+      return 'outline';
+    default:
+      return 'outline';
+  }
 }
 
-const emptyFilters: Filters = { status: '', minScore: '', maxScore: '', lastActivityAfter: '' };
-
 export default function CRMPipelineView() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [transitionError, setTransitionError] = useState<string | null>(null);
-  const [transitioningId, setTransitioningId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>('all');
 
   const fetchPipeline = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ founderId: FOUNDER_ID });
-      if (filters.status) params.set('status', filters.status);
-      if (filters.minScore.trim()) params.set('minScore', filters.minScore.trim());
-      if (filters.maxScore.trim()) params.set('maxScore', filters.maxScore.trim());
-      if (filters.lastActivityAfter) params.set('lastActivityAfter', filters.lastActivityAfter);
-
-      const res = await fetch(`/api/crm/pipeline?${params}`);
+      const res = await fetch('/api/crm/pipeline');
       if (!res.ok) {
-        const err: ApiError = await res.json();
+        const err = await res.json();
         setError(err.message ?? 'Failed to load pipeline');
         return;
       }
@@ -68,236 +76,137 @@ export default function CRMPipelineView() {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [session]);
 
   useEffect(() => {
     fetchPipeline();
   }, [fetchPipeline]);
 
-  useEffect(() => {
-    if (transitionError) {
-      const t = setTimeout(() => setTransitionError(null), 5000);
-      return () => clearTimeout(t);
-    }
-  }, [transitionError]);
-
-  async function handleStatusTransition(lead: PipelineLead, toStatus: CRMStatus) {
-    setTransitionError(null);
-    const fromOrder = CRM_PIPELINE_ORDER[lead.crmStatus];
-    const toOrder = CRM_PIPELINE_ORDER[toStatus];
-    const isBackward = toOrder < fromOrder;
-
-    let reason: string | undefined;
-    let meetingDate: string | undefined;
-
-    if (isBackward) {
-      const input = window.prompt(
-        `Moving ${lead.name} backward from ${lead.crmStatus} to ${toStatus}. Please provide a reason:`,
-      );
-      if (!input || !input.trim()) {
-        setTransitionError('A reason is required when moving a lead backward in the pipeline');
-        return;
-      }
-      reason = input.trim();
-    }
-
-    if (toStatus === 'Booked') {
-      const input = window.prompt(
-        `Enter meeting date and time for ${lead.name} (e.g. 2025-01-15T10:00):`,
-      );
-      if (!input || !input.trim()) {
-        setTransitionError('A meeting date is required when moving a lead to Booked status');
-        return;
-      }
-      const parsed = new Date(input.trim());
-      if (isNaN(parsed.getTime())) {
-        setTransitionError('Invalid date format. Please use ISO format (e.g. 2025-01-15T10:00)');
-        return;
-      }
-      meetingDate = input.trim();
-    }
-
-    setTransitioningId(lead.id);
-    try {
-      const body: Record<string, string> = { toStatus };
-      if (reason) body.reason = reason;
-      if (meetingDate) body.meetingDate = meetingDate;
-
-      const res = await fetch(`/api/crm/${lead.id}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const err: ApiError = await res.json();
-        setTransitionError(err.message ?? 'Failed to update status');
-        return;
-      }
-
-      fetchPipeline();
-    } catch {
-      setTransitionError('Network error updating status');
-    } finally {
-      setTransitioningId(null);
-    }
+  if (sessionLoading || loading) {
+    return (
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-20" />
+          ))}
+        </div>
+        <Skeleton className="h-64" />
+      </div>
+    );
   }
 
-  function getAdjacentStatuses(status: CRMStatus): { prev?: CRMStatus; next?: CRMStatus } {
-    const idx = PIPELINE_STATUSES.indexOf(status);
-    return {
-      prev: idx > 0 ? PIPELINE_STATUSES[idx - 1] : undefined,
-      next: idx < PIPELINE_STATUSES.length - 1 ? PIPELINE_STATUSES[idx + 1] : undefined,
-    };
+  if (error && !pipeline) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchPipeline}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
   }
 
-  function leadsForStatus(status: CRMStatus): PipelineLead[] {
-    if (!pipeline) return [];
-    return pipeline.leads.filter((l) => l.crmStatus === status);
-  }
+  if (!pipeline) return null;
 
-  const visibleStatuses = filters.status
-    ? PIPELINE_STATUSES.filter((s) => s === filters.status)
-    : PIPELINE_STATUSES;
+  const filteredLeads =
+    activeTab === 'all' ? pipeline.leads : pipeline.leads.filter((l) => l.crmStatus === activeTab);
 
   return (
-    <section className="pipeline-view" aria-label="CRM Pipeline">
-      <h2 className="pipeline-title">CRM Pipeline</h2>
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">CRM Pipeline</h2>
 
-      {/* Filters */}
-      <div className="pipeline-filters" role="search" aria-label="Pipeline filters">
-        <div className="form-field">
-          <label htmlFor="pipeline-filter-status">Status</label>
-          <select
-            id="pipeline-filter-status"
-            value={filters.status}
-            onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
-          >
-            <option value="">All</option>
-            {PIPELINE_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="form-field">
-          <label htmlFor="pipeline-filter-min-score">Min Score</label>
-          <input
-            id="pipeline-filter-min-score"
-            type="number"
-            min={1}
-            max={100}
-            value={filters.minScore}
-            onChange={(e) => setFilters((f) => ({ ...f, minScore: e.target.value }))}
-            placeholder="1"
-          />
-        </div>
-        <div className="form-field">
-          <label htmlFor="pipeline-filter-max-score">Max Score</label>
-          <input
-            id="pipeline-filter-max-score"
-            type="number"
-            min={1}
-            max={100}
-            value={filters.maxScore}
-            onChange={(e) => setFilters((f) => ({ ...f, maxScore: e.target.value }))}
-            placeholder="100"
-          />
-        </div>
-        <div className="form-field">
-          <label htmlFor="pipeline-filter-activity">Last Activity After</label>
-          <input
-            id="pipeline-filter-activity"
-            type="date"
-            value={filters.lastActivityAfter}
-            onChange={(e) => setFilters((f) => ({ ...f, lastActivityAfter: e.target.value }))}
-          />
-        </div>
-      </div>
-
-      {/* Transition error toast */}
-      {transitionError && (
-        <div className="toast toast-error" role="alert">
-          {transitionError}
-        </div>
+      {error && (
+        <Alert variant="destructive" role="alert">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
-      {/* Loading / Error states */}
-      {loading && <div className="pipeline-loading">Loading pipeline...</div>}
-      {error && !loading && (
-        <div className="toast toast-error" role="alert">
-          {error}
-        </div>
-      )}
+      {/* Status Counts */}
+      <section
+        className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5"
+        aria-label="Pipeline status counts"
+      >
+        {CRM_STATUSES.map((status) => (
+          <Card key={status}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">{status}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">{pipeline.counts[status] ?? 0}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </section>
 
-      {/* Kanban board */}
-      {!loading && pipeline && (
-        <div className="pipeline-board" role="region" aria-label="Pipeline columns">
-          {visibleStatuses.map((status) => {
-            const leads = leadsForStatus(status);
-            const count = pipeline.counts[status] ?? 0;
-            return (
-              <section key={status} className="pipeline-column" aria-label={`${status} column`}>
-                <header className="pipeline-column-header">
-                  <h3 className="pipeline-column-title">{status}</h3>
-                  <span className="pipeline-column-count" aria-label={`${count} leads`}>
-                    {count}
-                  </span>
-                </header>
-                <ul className="pipeline-card-list" aria-label={`${status} leads`}>
-                  {leads.length === 0 ? (
-                    <li className="pipeline-empty">No leads</li>
-                  ) : (
-                    leads.map((lead) => {
-                      const { prev, next } = getAdjacentStatuses(status);
-                      const isTransitioning = transitioningId === lead.id;
-                      return (
-                        <li key={lead.id} className="pipeline-card">
-                          <div className="pipeline-card-name">{lead.name}</div>
-                          <div className="pipeline-card-company">{lead.company}</div>
-                          <div className="pipeline-card-score">
-                            <span
-                              className="score-cell"
-                              title={`ICP: ${lead.scoreBreakdown.icpMatch} | Role: ${lead.scoreBreakdown.roleRelevance} | Intent: ${lead.scoreBreakdown.intentSignals}`}
-                            >
-                              Score: {lead.leadScore}
-                            </span>
-                          </div>
-                          <div className="pipeline-card-actions">
-                            {prev && (
-                              <button
-                                type="button"
-                                className="pipeline-move-btn"
-                                disabled={isTransitioning}
-                                onClick={() => handleStatusTransition(lead, prev)}
-                                aria-label={`Move ${lead.name} to ${prev}`}
-                              >
-                                ← {prev}
-                              </button>
-                            )}
-                            {next && (
-                              <button
-                                type="button"
-                                className="pipeline-move-btn"
-                                disabled={isTransitioning}
-                                onClick={() => handleStatusTransition(lead, next)}
-                                aria-label={`Move ${lead.name} to ${next}`}
-                              >
-                                {next} →
-                              </button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })
-                  )}
-                </ul>
-              </section>
-            );
-          })}
-        </div>
-      )}
-    </section>
+      {/* Leads Table with Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="all">All</TabsTrigger>
+          {CRM_STATUSES.map((status) => (
+            <TabsTrigger key={status} value={status}>
+              {status}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value={activeTab} className="mt-4">
+          {filteredLeads.length === 0 ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+                <p className="text-muted-foreground">
+                  {activeTab === 'all'
+                    ? 'No leads in the pipeline yet. Discover your first leads to get started.'
+                    : `No leads with status "${activeTab}".`}
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Company</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Score</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Last Activity</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredLeads.map((lead) => (
+                      <TableRow key={lead.id}>
+                        <TableCell className="font-medium">{lead.name}</TableCell>
+                        <TableCell>{lead.company}</TableCell>
+                        <TableCell className="text-muted-foreground">{lead.role}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{lead.leadScore}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={statusBadgeVariant(lead.crmStatus)}>
+                            {lead.crmStatus}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {new Date(lead.updatedAt).toLocaleDateString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                          })}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }

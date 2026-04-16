@@ -1,22 +1,22 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getICP, saveICP, validateICP, type ICPInput } from '@/services/icpService';
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * GET /api/icp?founderId=<uuid>
- * Retrieve the current ICP for a founder.
+ * GET /api/icp
+ * Retrieve the current ICP for the authenticated founder.
+ *
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-
-  if (!founderId) {
-    return validationError('founderId query parameter is required', {
-      founderId: 'missing',
-    });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const icp = await getICP(founderId);
+    const icp = await getICP(session.founderId);
     if (!icp) {
       return NextResponse.json(null, { status: 404 });
     }
@@ -28,10 +28,18 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/icp
- * Create or update an ICP. Body must include founderId, targetRole, industry.
+ * Create or update an ICP. Body must include targetRole, industry.
+ * founderId is derived from the server-side session.
  * On save, triggers async lead score recalculation.
+ *
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
 export async function POST(request: NextRequest) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   let body: ICPInput;
   try {
     body = await request.json();
@@ -39,9 +47,8 @@ export async function POST(request: NextRequest) {
     return validationError('Invalid JSON body');
   }
 
-  if (!body.founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
-  }
+  // Override any client-supplied founderId with session value
+  body.founderId = session.founderId;
 
   // Validate required ICP fields
   const validation = validateICP(body);
@@ -60,12 +67,11 @@ export async function POST(request: NextRequest) {
     const icp = await saveICP(body as ICPInput & { targetRole: string; industry: string });
 
     // Fire-and-forget: trigger async lead score recalculation
-    // The /api/leads/recalculate endpoint will be created in task 2.3
     const baseUrl = request.nextUrl.origin;
     fetch(`${baseUrl}/api/leads/recalculate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ founderId: body.founderId }),
+      body: JSON.stringify({ founderId: session.founderId }),
     }).catch(() => {
       // Silently ignore — recalculation endpoint may not exist yet
     });

@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import {
   getLeadById,
   softDeleteLead,
@@ -13,14 +14,19 @@ type RouteContext = { params: Promise<{ id: string }> };
  * GET /api/leads/:id
  * Retrieve a single lead by ID.
  *
- * Requirements: 2.2
+ * Requirements: 2.2, 3.1, 3.2, 3.3, 3.4
  */
 export async function GET(_request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   try {
     const lead = await getLeadById(id);
-    if (!lead) {
+    if (!lead || lead.founderId !== session.founderId) {
       return NextResponse.json(null, { status: 404 });
     }
     return NextResponse.json(lead);
@@ -33,9 +39,14 @@ export async function GET(_request: NextRequest, context: RouteContext) {
  * PATCH /api/leads/:id
  * Update a lead's fields.
  *
- * Requirements: 10.2
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 10.2
  */
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   let body: UpdateLeadInput;
@@ -46,11 +57,15 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const lead = await updateLead(id, body);
-    if (!lead) {
+    const lead = await getLeadById(id);
+    if (!lead || lead.founderId !== session.founderId) {
       return NextResponse.json(null, { status: 404 });
     }
-    return NextResponse.json(lead);
+    const updated = await updateLead(id, body);
+    if (!updated) {
+      return NextResponse.json(null, { status: 404 });
+    }
+    return NextResponse.json(updated);
   } catch {
     return dbWriteError('Failed to update lead');
   }
@@ -60,17 +75,26 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
  * DELETE /api/leads/:id
  * Soft-delete a lead.
  *
- * Requirements: 10.5
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 10.5
  */
 export async function DELETE(_request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   try {
-    const lead = await softDeleteLead(id);
-    if (!lead) {
+    const lead = await getLeadById(id);
+    if (!lead || lead.founderId !== session.founderId) {
       return NextResponse.json(null, { status: 404 });
     }
-    return NextResponse.json(lead);
+    const deleted = await softDeleteLead(id);
+    if (!deleted) {
+      return NextResponse.json(null, { status: 404 });
+    }
+    return NextResponse.json(deleted);
   } catch {
     return dbWriteError('Failed to delete lead');
   }

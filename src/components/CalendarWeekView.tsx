@@ -1,6 +1,10 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { CalendarEvent, TimeSlot } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -49,6 +53,7 @@ function formatTime(date: Date): string {
 }
 
 export default function CalendarWeekView() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [slots, setSlots] = useState<TimeSlot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,12 +62,13 @@ export default function CalendarWeekView() {
   const monday = getWeekMonday();
 
   const fetchData = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
       const [eventsRes, slotsRes] = await Promise.all([
-        fetch(`/api/pipeline/calendar/week?founderId=${FOUNDER_ID}`),
-        fetch(`/api/pipeline/calendar/slots?founderId=${FOUNDER_ID}`),
+        fetch('/api/pipeline/calendar/week'),
+        fetch('/api/pipeline/calendar/slots'),
       ]);
 
       if (!eventsRes.ok) {
@@ -89,7 +95,7 @@ export default function CalendarWeekView() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetchData();
@@ -129,22 +135,30 @@ export default function CalendarWeekView() {
     return `${monStr} – ${sunStr}`;
   }
 
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="dashboard-loading" role="status" aria-live="polite">
-        Loading calendar...
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-64" />
+        <div className="grid grid-cols-7 gap-2">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <Skeleton key={i} className="h-64" />
+          ))}
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="dashboard-error" role="alert">
-        <p>{error}</p>
-        <button type="button" className="action-btn" onClick={fetchData}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchData}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -152,99 +166,119 @@ export default function CalendarWeekView() {
   const slMap = slotsByDay();
 
   return (
-    <div className="calendar-week-view">
-      <h2>Calendar — {weekRangeLabel()}</h2>
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold tracking-tight">Calendar — {weekRangeLabel()}</h2>
 
-      <div className="calendar-grid" role="grid" aria-label="Weekly calendar">
-        {/* Time gutter */}
-        <div className="calendar-gutter" role="presentation">
-          <div className="calendar-gutter-header" />
-          {Array.from({ length: TOTAL_HOURS }, (_, i) => {
-            const hour = START_HOUR + i;
-            const label = `${hour % 12 === 0 ? 12 : hour % 12} ${hour < 12 ? 'AM' : 'PM'}`;
-            return (
-              <div key={hour} className="calendar-gutter-cell">
-                {label}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Day columns */}
-        {DAY_LABELS.map((label, colIdx) => {
-          const colDate = new Date(monday);
-          colDate.setDate(monday.getDate() + colIdx);
-          const isToday = new Date().toDateString() === colDate.toDateString();
-          const dayEvents = evMap.get(colIdx) ?? [];
-          const daySlots = slMap.get(colIdx) ?? [];
-
-          return (
-            <div
-              key={label}
-              className={`calendar-day-column${isToday ? ' calendar-day-today' : ''}`}
-              role="gridcell"
-              aria-label={`${label} ${colDate.toLocaleDateString()}`}
-            >
-              <div className="calendar-day-header">
-                <span className="calendar-day-label">{label}</span>
-                <span className="calendar-day-date">{colDate.getDate()}</span>
-              </div>
-
-              <div className="calendar-day-body">
-                {/* Hour grid lines */}
-                {Array.from({ length: TOTAL_HOURS }, (_, i) => (
+      <Card>
+        <CardContent className="p-0">
+          <div
+            className="grid grid-cols-[auto_repeat(7,1fr)]"
+            role="grid"
+            aria-label="Weekly calendar"
+          >
+            {/* Time gutter */}
+            <div className="border-r" role="presentation">
+              <div className="h-10 border-b" />
+              {Array.from({ length: TOTAL_HOURS }, (_, i) => {
+                const hour = START_HOUR + i;
+                const label = `${hour % 12 === 0 ? 12 : hour % 12} ${hour < 12 ? 'AM' : 'PM'}`;
+                return (
                   <div
-                    key={i}
-                    className="calendar-hour-line"
-                    style={{ top: `${(i / TOTAL_HOURS) * 100}%` }}
-                  />
-                ))}
-
-                {/* Availability windows overlay */}
-                {daySlots.map((slot, i) => {
-                  const pos = timePosition(new Date(slot.start), new Date(slot.end));
-                  return (
-                    <div
-                      key={`avail-${i}`}
-                      className="calendar-availability-slot"
-                      style={{ top: pos.top, height: pos.height }}
-                      aria-label="Available time slot"
-                    />
-                  );
-                })}
-
-                {/* Meeting events */}
-                {dayEvents.map((ev) => {
-                  const start = new Date(ev.startTime);
-                  const end = new Date(ev.endTime);
-                  const pos = timePosition(start, end);
-                  // Extract prospect name from title (format: "Meeting with <Name>")
-                  const prospectName = ev.title.replace(/^Meeting with\s*/i, '') || ev.title;
-
-                  return (
-                    <div
-                      key={ev.id}
-                      className="calendar-event"
-                      style={{ top: pos.top, height: pos.height }}
-                      title={ev.description}
-                    >
-                      <span className="calendar-event-time">
-                        {formatTime(start)} – {formatTime(end)}
-                      </span>
-                      <span className="calendar-event-name">{prospectName}</span>
-                      {ev.description && (
-                        <span className="calendar-event-desc">{ev.description}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    key={hour}
+                    className="flex h-16 items-start justify-end border-b px-2 text-xs text-muted-foreground"
+                  >
+                    {label}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
 
-      {events.length === 0 && <p className="empty-state">No meetings booked this week.</p>}
+            {/* Day columns */}
+            {DAY_LABELS.map((label, colIdx) => {
+              const colDate = new Date(monday);
+              colDate.setDate(monday.getDate() + colIdx);
+              const isToday = new Date().toDateString() === colDate.toDateString();
+              const dayEvents = evMap.get(colIdx) ?? [];
+              const daySlots = slMap.get(colIdx) ?? [];
+
+              return (
+                <div
+                  key={label}
+                  className={`border-r last:border-r-0 ${isToday ? 'bg-accent/30' : ''}`}
+                  role="gridcell"
+                  aria-label={`${label} ${colDate.toLocaleDateString()}`}
+                >
+                  <div className="flex h-10 flex-col items-center justify-center border-b">
+                    <span className="text-xs font-medium">{label}</span>
+                    <span
+                      className={`text-xs ${isToday ? 'font-bold text-primary' : 'text-muted-foreground'}`}
+                    >
+                      {colDate.getDate()}
+                    </span>
+                  </div>
+
+                  <div className="relative" style={{ height: `${TOTAL_HOURS * 64}px` }}>
+                    {/* Hour grid lines */}
+                    {Array.from({ length: TOTAL_HOURS }, (_, i) => (
+                      <div
+                        key={i}
+                        className="absolute w-full border-b"
+                        style={{
+                          top: `${(i / TOTAL_HOURS) * 100}%`,
+                          height: `${100 / TOTAL_HOURS}%`,
+                        }}
+                      />
+                    ))}
+
+                    {/* Availability windows overlay */}
+                    {daySlots.map((slot, i) => {
+                      const pos = timePosition(new Date(slot.start), new Date(slot.end));
+                      return (
+                        <div
+                          key={`avail-${i}`}
+                          className="absolute left-0 right-0 rounded bg-green-100 opacity-40 dark:bg-green-900"
+                          style={{ top: pos.top, height: pos.height }}
+                          aria-label="Available time slot"
+                        />
+                      );
+                    })}
+
+                    {/* Meeting events */}
+                    {dayEvents.map((ev) => {
+                      const start = new Date(ev.startTime);
+                      const end = new Date(ev.endTime);
+                      const pos = timePosition(start, end);
+                      const prospectName = ev.title.replace(/^Meeting with\s*/i, '') || ev.title;
+
+                      return (
+                        <div
+                          key={ev.id}
+                          className="absolute left-0.5 right-0.5 overflow-hidden rounded bg-primary/10 border border-primary/20 px-1 text-xs"
+                          style={{ top: pos.top, height: pos.height }}
+                          title={ev.description}
+                        >
+                          <span className="font-medium text-primary">
+                            {formatTime(start)} – {formatTime(end)}
+                          </span>
+                          <span className="block truncate">{prospectName}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {events.length === 0 && (
+        <Card>
+          <CardContent className="py-8 text-center">
+            <p className="text-sm text-muted-foreground">No meetings booked this week.</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

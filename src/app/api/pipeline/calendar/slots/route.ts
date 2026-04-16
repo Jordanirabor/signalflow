@@ -1,17 +1,18 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getAvailableSlots } from '@/services/calendarIntegrationService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
- * GET /api/pipeline/calendar/slots?founderId=<uuid>
+ * GET /api/pipeline/calendar/slots
  * Returns available meeting slots for the next 7 days.
  *
- * Requirements: 8.3
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 8.3
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
     const endDate = new Date();
     endDate.setDate(endDate.getDate() + 7);
 
-    const slots = await getAvailableSlots(founderId, startDate, endDate);
+    const slots = await getAvailableSlots(session.founderId, startDate, endDate);
     return NextResponse.json({ slots });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to retrieve available slots';

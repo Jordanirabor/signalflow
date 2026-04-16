@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { researchAndGenerate } from '@/services/autoResearchOrchestrator';
 import { getEnrichedICP } from '@/services/icpService';
 import { getLeadById } from '@/services/leadService';
@@ -20,9 +21,14 @@ import { NextRequest, NextResponse } from 'next/server';
  *
  * Falls back to existing generation when no enriched data is available.
  *
- * Requirements: 4.1, 4.2, 4.3, 4.5, 4.6, 4.7, 4.8, 5.1, 5.4
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 4.5, 4.6, 4.7, 4.8, 5.1, 5.4
  */
 export async function POST(request: NextRequest) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   let body: MessageRequest;
   try {
     body = await request.json();
@@ -69,7 +75,7 @@ export async function POST(request: NextRequest) {
   let researchProfile: ResearchProfile | null = null;
 
   try {
-    enrichedICP = await getEnrichedICP(lead.founderId);
+    enrichedICP = await getEnrichedICP(session.founderId);
   } catch {
     // Enriched ICP fetch failed — continue with fallback
     enrichedICP = null;

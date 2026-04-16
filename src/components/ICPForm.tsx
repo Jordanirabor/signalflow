@@ -1,6 +1,19 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
+import { useSession } from '@/hooks/useSession';
 import { useState } from 'react';
 
 interface GeneratedProfile {
@@ -23,12 +36,14 @@ interface ICPFormProps {
 }
 
 export default function ICPForm({ onConfirm }: ICPFormProps) {
+  const { session, isLoading: sessionLoading } = useSession();
   const [productDescription, setProductDescription] = useState('');
   const [generating, setGenerating] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null,
   );
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
 
   // Generated profiles pending review
   const [generatedProfiles, setGeneratedProfiles] = useState<GeneratedProfile[] | null>(null);
@@ -49,7 +64,6 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           productDescription: productDescription.trim(),
-          founderId: FOUNDER_ID,
         }),
       });
 
@@ -84,7 +98,6 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          founderId: FOUNDER_ID,
           profiles: generatedProfiles,
         }),
       });
@@ -96,6 +109,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
       }
 
       setGeneratedProfiles(null);
+      setConfirmDialogOpen(false);
       setFeedback({
         type: 'success',
         message: 'ICP set saved successfully. Lead scores are being recalculated.',
@@ -111,126 +125,158 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
   function handleCancel() {
     setGeneratedProfiles(null);
     setFeedback(null);
+    setConfirmDialogOpen(false);
   }
 
+  if (sessionLoading) {
+    return (
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-4 w-96" />
+        <Skeleton className="h-24" />
+        <Skeleton className="h-10 w-48" />
+      </div>
+    );
+  }
+
+  if (!session) return null;
+
   return (
-    <div className="icp-page">
+    <div className="space-y-6">
       {/* AI Generation Section */}
-      <section className="icp-generate-section" id="icp-generate-section">
-        <h2>Generate ICP from Your Product</h2>
-        <p className="icp-generate-hint">
-          Describe what your product does and who it helps. The AI will generate multiple ideal
-          customer profiles targeting different buyer personas.
-        </p>
-        <div className="form-field">
-          <label htmlFor="icp-productDesc">Product Description</label>
-          <textarea
-            id="icp-productDesc"
-            value={productDescription}
-            onChange={(e) => setProductDescription(e.target.value)}
-            placeholder="e.g. We build an AI-powered code review tool that helps engineering teams catch bugs before they ship. It integrates with GitHub and GitLab and is used by mid-size SaaS companies..."
-            rows={4}
-          />
-        </div>
-        <button
-          type="button"
-          className="action-btn icp-generate-btn"
-          onClick={handleGenerate}
-          disabled={generating || confirming || !productDescription.trim()}
-        >
-          {generating ? '✨ Generating ICPs...' : '✨ Generate ICP with AI'}
-        </button>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Generate ICP from Your Product</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Describe what your product does and who it helps. The AI will generate multiple ideal
+            customer profiles targeting different buyer personas.
+          </p>
+          <div className="space-y-2">
+            <label htmlFor="icp-productDesc" className="text-sm font-medium">
+              Product Description
+            </label>
+            <Textarea
+              id="icp-productDesc"
+              value={productDescription}
+              onChange={(e) => setProductDescription(e.target.value)}
+              placeholder="e.g. We build an AI-powered code review tool that helps engineering teams catch bugs before they ship. It integrates with GitHub and GitLab and is used by mid-size SaaS companies..."
+              rows={4}
+            />
+          </div>
+          <Button
+            onClick={handleGenerate}
+            disabled={generating || confirming || !productDescription.trim()}
+          >
+            {generating ? 'Generating ICPs...' : 'Generate ICP with AI'}
+          </Button>
+        </CardContent>
+      </Card>
 
       {feedback && (
-        <div className={`form-feedback ${feedback.type}`} role="status">
-          {feedback.message}
-        </div>
+        <Alert variant={feedback.type === 'error' ? 'destructive' : 'default'} role="status">
+          <AlertTitle>{feedback.type === 'error' ? 'Error' : 'Success'}</AlertTitle>
+          <AlertDescription>{feedback.message}</AlertDescription>
+        </Alert>
       )}
 
       {/* Generated profiles preview */}
       {generatedProfiles && generatedProfiles.length > 0 && (
-        <section className="icp-preview-section">
-          <div className="icp-preview-header">
-            <h2>Review Generated Profiles</h2>
-            <p className="icp-preview-notice">
+        <Card>
+          <CardHeader>
+            <CardTitle>Review Generated Profiles</CardTitle>
+            <p className="text-sm text-muted-foreground">
               Your existing ICP set is still active while you review. Confirm to replace it with
               these new profiles.
             </p>
-          </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {generatedProfiles.map((profile, index) => (
+                <Card key={index} aria-label={`Preview: ${profile.targetRole}`}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">{profile.targetRole}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    <div>
+                      <span className="font-medium text-muted-foreground">Industry</span>
+                      <p>{profile.industry}</p>
+                    </div>
+                    {profile.geography && (
+                      <div>
+                        <span className="font-medium text-muted-foreground">Geography</span>
+                        <p>{profile.geography}</p>
+                      </div>
+                    )}
+                    {profile.companyStage && (
+                      <div>
+                        <span className="font-medium text-muted-foreground">Company Stage</span>
+                        <p>{profile.companyStage}</p>
+                      </div>
+                    )}
+                    {profile.painPoints.length > 0 && (
+                      <div>
+                        <span className="font-medium text-muted-foreground">Pain Points</span>
+                        <ul className="ml-4 list-disc">
+                          {profile.painPoints.map((pp, i) => (
+                            <li key={i}>{pp}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {profile.buyingSignals.length > 0 && (
+                      <div>
+                        <span className="font-medium text-muted-foreground">Buying Signals</span>
+                        <ul className="ml-4 list-disc">
+                          {profile.buyingSignals.map((bs, i) => (
+                            <li key={i}>{bs}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
 
-          <div className="icp-preview-grid">
-            {generatedProfiles.map((profile, index) => (
-              <div
-                key={index}
-                className="icp-preview-card"
-                aria-label={`Preview: ${profile.targetRole}`}
-              >
-                <div className="icp-preview-card-header">
-                  <h3 className="icp-preview-card-title">{profile.targetRole}</h3>
-                </div>
-                <div className="icp-preview-card-body">
-                  <div className="icp-preview-field">
-                    <span className="icp-preview-label">Industry</span>
-                    <span className="icp-preview-value">{profile.industry}</span>
-                  </div>
-                  {profile.geography && (
-                    <div className="icp-preview-field">
-                      <span className="icp-preview-label">Geography</span>
-                      <span className="icp-preview-value">{profile.geography}</span>
-                    </div>
-                  )}
-                  {profile.companyStage && (
-                    <div className="icp-preview-field">
-                      <span className="icp-preview-label">Company Stage</span>
-                      <span className="icp-preview-value">{profile.companyStage}</span>
-                    </div>
-                  )}
-                  {profile.painPoints.length > 0 && (
-                    <div className="icp-preview-field">
-                      <span className="icp-preview-label">Pain Points</span>
-                      <ul className="icp-preview-list">
-                        {profile.painPoints.map((pp, i) => (
-                          <li key={i}>{pp}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {profile.buyingSignals.length > 0 && (
-                    <div className="icp-preview-field">
-                      <span className="icp-preview-label">Buying Signals</span>
-                      <ul className="icp-preview-list">
-                        {profile.buyingSignals.map((bs, i) => (
-                          <li key={i}>{bs}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+            <div className="flex gap-2">
+              <Button onClick={() => setConfirmDialogOpen(true)} disabled={confirming}>
+                {confirming ? 'Saving...' : 'Confirm & Save'}
+              </Button>
+              <Button variant="outline" onClick={handleCancel} disabled={confirming}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-          <div className="icp-preview-actions">
-            <button
-              type="button"
-              className="action-btn icp-confirm-btn"
-              onClick={handleConfirm}
-              disabled={confirming}
-            >
-              {confirming ? 'Saving...' : 'Confirm & Save'}
-            </button>
-            <button
-              type="button"
-              className="action-btn icp-cancel-btn"
-              onClick={handleCancel}
+      {/* Confirm Dialog */}
+      <Dialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm ICP Replacement</DialogTitle>
+            <DialogDescription>
+              This will replace your existing ICP profiles with the {generatedProfiles?.length ?? 0}{' '}
+              newly generated profiles. Lead scores will be recalculated. This action cannot be
+              undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDialogOpen(false)}
               disabled={confirming}
             >
               Cancel
-            </button>
-          </div>
-        </section>
-      )}
+            </Button>
+            <Button onClick={handleConfirm} disabled={confirming}>
+              {confirming ? 'Saving...' : 'Confirm & Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

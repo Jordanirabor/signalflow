@@ -1,4 +1,5 @@
 import { dbWriteError, duplicateError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getICP } from '@/services/icpService';
 import { createLead, findDuplicate, listLeads, type CreateLeadInput } from '@/services/leadService';
 import { researchProspect } from '@/services/prospectResearcherService';
@@ -10,19 +11,21 @@ import { NextRequest, NextResponse } from 'next/server';
  * Manual lead entry. Scores the lead using the scoring service if an ICP exists.
  * Returns 409 with existing lead ID on duplicate.
  *
- * Requirements: 2.2, 2.5, 10.4
+ * Requirements: 2.2, 2.5, 3.1, 3.2, 3.3, 3.4, 10.4
  */
 export async function POST(request: NextRequest) {
-  let body: CreateLeadInput;
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let body: Omit<CreateLeadInput, 'founderId'>;
   try {
     body = await request.json();
   } catch {
     return validationError('Invalid JSON body');
   }
 
-  if (!body.founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
-  }
   if (!body.name || body.name.trim() === '') {
     return validationError('name is required', { name: 'missing' });
   }
@@ -33,9 +36,11 @@ export async function POST(request: NextRequest) {
     return validationError('company is required', { company: 'missing' });
   }
 
+  const founderId = session.founderId;
+
   try {
     // Proactive duplicate check
-    const existing = await findDuplicate(body.founderId, body.name, body.company);
+    const existing = await findDuplicate(founderId, body.name, body.company);
     if (existing) {
       return duplicateError('A lead with this name and company already exists', {
         existingLeadId: existing.id,
@@ -46,7 +51,7 @@ export async function POST(request: NextRequest) {
     let score = 0;
     let scoreBreakdown = { icpMatch: 0, roleRelevance: 0, intentSignals: 0 };
 
-    const icp = await getICP(body.founderId);
+    const icp = await getICP(founderId);
     if (icp) {
       const result = calculateLeadScore({
         lead: {
@@ -62,7 +67,7 @@ export async function POST(request: NextRequest) {
       scoreBreakdown = result.breakdown;
     }
 
-    const lead = await createLead(body, score, scoreBreakdown);
+    const lead = await createLead({ ...body, founderId }, score, scoreBreakdown);
 
     // Fire-and-forget: trigger async deep research for the new lead
     // The researchProspect function handles setting enrichment status
@@ -78,7 +83,7 @@ export async function POST(request: NextRequest) {
   } catch (err: unknown) {
     // Catch unique constraint violation (race condition fallback)
     if (isUniqueViolation(err)) {
-      const existing = await findDuplicate(body.founderId, body.name, body.company);
+      const existing = await findDuplicate(founderId, body.name, body.company);
       return duplicateError('A lead with this name and company already exists', {
         existingLeadId: existing?.id ?? 'unknown',
       });
@@ -88,17 +93,15 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * GET /api/leads?founderId=<uuid>&minScore=<number>&sortBy=<score|created>
+ * GET /api/leads?minScore=<number>&sortBy=<score|created>
  * List leads with optional filters. Default sort: leadScore DESC.
  *
- * Requirements: 2.2, 3.2, 3.3
+ * Requirements: 2.2, 3.1, 3.2, 3.3, 3.4
  */
 export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', {
-      founderId: 'missing',
-    });
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const minScoreParam = request.nextUrl.searchParams.get('minScore');
@@ -114,7 +117,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const leads = await listLeads({
-      founderId,
+      founderId: session.founderId,
       minScore,
       sortBy: sortBy ?? undefined,
     });

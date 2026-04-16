@@ -1,6 +1,20 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
+import { useSession } from '@/hooks/useSession';
 import type { ApiError, OutreachRecord, ThrottleStatus } from '@/types';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -23,6 +37,7 @@ interface OutreachTrackerProps {
 }
 
 export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrackerProps) {
+  const { session, isLoading: sessionLoading } = useSession();
   // Form state
   const [channel, setChannel] = useState<'email' | 'dm'>('email');
   const [messageContent, setMessageContent] = useState(prefillMessage ?? '');
@@ -51,8 +66,9 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
   }, [prefillMessage]);
 
   const fetchThrottleStatus = useCallback(async () => {
+    if (!session) return;
     try {
-      const res = await fetch(`/api/throttle/status?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/throttle/status');
       if (res.ok) {
         const data: ThrottleStatusMap = await res.json();
         setThrottle(data);
@@ -60,9 +76,10 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
     } catch {
       /* silent */
     }
-  }, []);
+  }, [session]);
 
   const fetchHistory = useCallback(async () => {
+    if (!session) return;
     setHistoryLoading(true);
     try {
       const res = await fetch(`/api/outreach/${leadId}`);
@@ -75,7 +92,7 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
     } finally {
       setHistoryLoading(false);
     }
-  }, [leadId]);
+  }, [leadId, session]);
 
   useEffect(() => {
     fetchThrottleStatus();
@@ -85,7 +102,7 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
   async function fetchStaleLeads() {
     setStaleLoading(true);
     try {
-      const res = await fetch(`/api/outreach/stale?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/outreach/stale');
       if (res.ok) {
         const data: StaleLeadEntry[] = await res.json();
         setStaleLeads(data);
@@ -129,7 +146,6 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leadId,
-          founderId: FOUNDER_ID,
           channel,
           messageContent: messageContent.trim(),
           isFollowUp,
@@ -165,169 +181,217 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
     return Math.floor(diff / (1000 * 60 * 60 * 24));
   }
 
+  if (sessionLoading) {
+    return (
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-32" />
+        <Skeleton className="h-48" />
+      </div>
+    );
+  }
+
   return (
-    <div className="outreach-tracker">
-      <h3>Record Outreach</h3>
+    <div className="space-y-6">
+      <h3 className="text-xl font-semibold tracking-tight">Record Outreach</h3>
 
       {/* Throttle warning banner */}
       {isWarning && !isBlocked && currentThrottle && (
-        <div className="toast toast-warning" role="status" aria-live="polite">
-          ⚠️ You have used {currentThrottle.used} of {currentThrottle.limit} daily {channel}{' '}
-          outreach actions. {currentThrottle.remaining} remaining.
-        </div>
+        <Alert role="status">
+          <AlertTitle>⚠️ Approaching Limit</AlertTitle>
+          <AlertDescription>
+            You have used {currentThrottle.used} of {currentThrottle.limit} daily {channel} outreach
+            actions. {currentThrottle.remaining} remaining.
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Throttle blocked banner */}
       {isBlocked && currentThrottle && (
-        <div className="toast toast-error" role="alert">
-          Daily {channel} outreach limit reached ({currentThrottle.limit}). Try again tomorrow.
-        </div>
+        <Alert variant="destructive" role="alert">
+          <AlertTitle>Limit Reached</AlertTitle>
+          <AlertDescription>
+            Daily {channel} outreach limit reached ({currentThrottle.limit}). Try again tomorrow.
+          </AlertDescription>
+        </Alert>
       )}
 
-      <form onSubmit={handleSubmit} className="outreach-form" noValidate>
-        <fieldset className="form-field">
-          <legend className="form-field-legend">Channel</legend>
-          <div className="outreach-channel-options">
-            <label className="outreach-radio-label">
-              <input
-                type="radio"
-                name="outreach-channel"
-                value="email"
-                checked={channel === 'email'}
-                onChange={() => setChannel('email')}
+      <Card>
+        <CardContent className="pt-6">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">Channel</legend>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="outreach-channel"
+                    value="email"
+                    checked={channel === 'email'}
+                    onChange={() => setChannel('email')}
+                    className="h-4 w-4"
+                  />
+                  Email
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="outreach-channel"
+                    value="dm"
+                    checked={channel === 'dm'}
+                    onChange={() => setChannel('dm')}
+                    className="h-4 w-4"
+                  />
+                  DM
+                </label>
+              </div>
+            </fieldset>
+
+            <div className="space-y-2">
+              <label htmlFor="outreach-message" className="text-sm font-medium">
+                Message Content <span aria-hidden="true">*</span>
+              </label>
+              <Textarea
+                id="outreach-message"
+                value={messageContent}
+                onChange={(e) => {
+                  setMessageContent(e.target.value);
+                  if (formError === 'Message content is required') setFormError(null);
+                }}
+                placeholder="Enter your outreach message..."
+                rows={6}
+                aria-required="true"
+                aria-invalid={formError === 'Message content is required'}
+                aria-describedby={
+                  formError === 'Message content is required' ? 'outreach-message-error' : undefined
+                }
               />
-              Email
-            </label>
-            <label className="outreach-radio-label">
+              {formError === 'Message content is required' && (
+                <p id="outreach-message-error" className="text-sm text-destructive" role="alert">
+                  {formError}
+                </p>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm">
               <input
-                type="radio"
-                name="outreach-channel"
-                value="dm"
-                checked={channel === 'dm'}
-                onChange={() => setChannel('dm')}
+                type="checkbox"
+                checked={isFollowUp}
+                onChange={(e) => setIsFollowUp(e.target.checked)}
+                className="h-4 w-4 rounded border-input"
               />
-              DM
+              This is a follow-up
             </label>
-          </div>
-        </fieldset>
 
-        <div className="form-field">
-          <label htmlFor="outreach-message">
-            Message Content <span aria-hidden="true">*</span>
-          </label>
-          <textarea
-            id="outreach-message"
-            value={messageContent}
-            onChange={(e) => {
-              setMessageContent(e.target.value);
-              if (formError === 'Message content is required') setFormError(null);
-            }}
-            placeholder="Enter your outreach message..."
-            rows={6}
-            aria-required="true"
-            aria-invalid={formError === 'Message content is required'}
-            aria-describedby={
-              formError === 'Message content is required' ? 'outreach-message-error' : undefined
-            }
-          />
-          {formError === 'Message content is required' && (
-            <span id="outreach-message-error" className="field-error" role="alert">
-              {formError}
-            </span>
-          )}
-        </div>
+            <Button type="submit" disabled={submitting || isBlocked} aria-disabled={isBlocked}>
+              {submitting ? 'Recording...' : 'Record Outreach'}
+            </Button>
 
-        <div className="form-field outreach-follow-up-field">
-          <label className="outreach-checkbox-label">
-            <input
-              type="checkbox"
-              checked={isFollowUp}
-              onChange={(e) => setIsFollowUp(e.target.checked)}
-            />
-            This is a follow-up
-          </label>
-        </div>
+            {formError && formError !== 'Message content is required' && (
+              <Alert variant="destructive" role="alert">
+                <AlertDescription>{formError}</AlertDescription>
+              </Alert>
+            )}
 
-        <button
-          type="submit"
-          className="action-btn"
-          disabled={submitting || isBlocked}
-          aria-disabled={isBlocked}
-        >
-          {submitting ? 'Recording...' : 'Record Outreach'}
-        </button>
-
-        {formError && formError !== 'Message content is required' && (
-          <div className="form-feedback error" role="alert">
-            {formError}
-          </div>
-        )}
-
-        {formSuccess && (
-          <div className="form-feedback success" role="status">
-            {formSuccess}
-          </div>
-        )}
-      </form>
+            {formSuccess && (
+              <Alert role="status">
+                <AlertDescription>{formSuccess}</AlertDescription>
+              </Alert>
+            )}
+          </form>
+        </CardContent>
+      </Card>
 
       {/* Outreach History */}
-      <section className="lead-info-section outreach-history-section" aria-label="Outreach History">
-        <h3>Outreach History</h3>
-        {historyLoading ? (
-          <p className="empty-state">Loading outreach history...</p>
-        ) : history.length === 0 ? (
-          <p className="empty-state">No outreach recorded yet.</p>
-        ) : (
-          <ul className="outreach-list">
-            {history.map((o) => (
-              <li key={o.id} className="outreach-item">
-                <span className="outreach-date">
-                  {new Date(o.outreachDate).toLocaleDateString()}
-                </span>
-                <span className={`channel-badge channel-${o.channel}`}>{o.channel}</span>
-                {o.isFollowUp && <span className="follow-up-badge">Follow-up</span>}
-                <p className="outreach-content">{o.messageContent}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Outreach History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {historyLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-8" />
+            </div>
+          ) : history.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No outreach recorded yet.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Channel</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Message</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.map((o) => (
+                  <TableRow key={o.id}>
+                    <TableCell className="whitespace-nowrap text-sm">
+                      {new Date(o.outreachDate).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={o.channel === 'email' ? 'default' : 'secondary'}>
+                        {o.channel}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {o.isFollowUp && <Badge variant="outline">Follow-up</Badge>}
+                    </TableCell>
+                    <TableCell className="max-w-xs truncate text-sm">{o.messageContent}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Stale Leads */}
-      <section className="lead-info-section stale-leads-section" aria-label="Stale Leads">
-        <div className="stale-leads-header">
-          <h3>Stale Leads</h3>
-          <button type="button" className="action-btn stale-toggle-btn" onClick={handleToggleStale}>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Stale Leads</CardTitle>
+          <Button variant="outline" size="sm" onClick={handleToggleStale}>
             {showStale ? 'Hide' : 'Show'} Stale Leads
-          </button>
-        </div>
+          </Button>
+        </CardHeader>
         {showStale && (
-          <>
+          <CardContent>
             {staleLoading ? (
-              <p className="empty-state">Loading stale leads...</p>
+              <div className="space-y-2">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
+              </div>
             ) : staleLeads.length === 0 ? (
-              <p className="empty-state">No stale leads found.</p>
+              <p className="text-sm text-muted-foreground">No stale leads found.</p>
             ) : (
-              <ul className="stale-leads-list">
-                {staleLeads.map((lead) => (
-                  <li key={lead.leadId} className="stale-lead-item">
-                    <div className="stale-lead-info">
-                      <span className="stale-lead-name">{lead.leadName}</span>
-                      <span className="stale-lead-company">{lead.company}</span>
-                      <span className={`status-badge status-${lead.crmStatus.toLowerCase()}`}>
-                        {lead.crmStatus}
-                      </span>
-                    </div>
-                    <span className="stale-lead-days">
-                      {daysSince(lead.lastOutreachDate)} days since last outreach
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Company</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Days Since Outreach</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {staleLeads.map((lead) => (
+                    <TableRow key={lead.leadId}>
+                      <TableCell className="font-medium">{lead.leadName}</TableCell>
+                      <TableCell>{lead.company}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary">{lead.crmStatus}</Badge>
+                      </TableCell>
+                      <TableCell>{daysSince(lead.lastOutreachDate)} days</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
-          </>
+          </CardContent>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

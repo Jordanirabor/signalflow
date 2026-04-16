@@ -1,21 +1,22 @@
-import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { dbWriteError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getStaleLeads } from '@/services/outreachService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
- * GET /api/outreach/stale?founderId=<uuid>
+ * GET /api/outreach/stale
  * Get leads contacted 7+ days ago with no reply.
  *
- * Requirements: 5.4
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 5.4
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const staleLeads = await getStaleLeads(founderId);
+    const staleLeads = await getStaleLeads(session.founderId);
     return NextResponse.json(staleLeads);
   } catch {
     return dbWriteError('Failed to retrieve stale leads');

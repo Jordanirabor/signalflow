@@ -1,12 +1,18 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { PipelineMetrics, PipelineStatus } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const POLL_INTERVAL_MS = 5000;
 
 export default function PipelineDashboard() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [metrics, setMetrics] = useState<PipelineMetrics | null>(null);
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -17,51 +23,55 @@ export default function PipelineDashboard() {
   );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchData = useCallback(async (isPolling = false) => {
-    if (!isPolling) setLoading(true);
-    setError(null);
-    try {
-      const [metricsRes, statusRes] = await Promise.all([
-        fetch(`/api/pipeline/metrics?founderId=${FOUNDER_ID}`),
-        fetch(`/api/pipeline/status?founderId=${FOUNDER_ID}`),
-      ]);
+  const fetchData = useCallback(
+    async (isPolling = false) => {
+      if (!session) return;
+      if (!isPolling) setLoading(true);
+      setError(null);
+      try {
+        const [metricsRes, statusRes] = await Promise.all([
+          fetch('/api/pipeline/metrics'),
+          fetch('/api/pipeline/status'),
+        ]);
 
-      if (!metricsRes.ok) {
-        const err = await metricsRes.json();
-        setError(err.message ?? 'Failed to load pipeline metrics');
-        return;
-      }
-      if (!statusRes.ok) {
-        const err = await statusRes.json();
-        setError(err.message ?? 'Failed to load pipeline status');
-        return;
-      }
-
-      const metricsData: PipelineMetrics = await metricsRes.json();
-      const statusData: PipelineStatus = await statusRes.json();
-
-      setMetrics(metricsData);
-      setStatus(statusData);
-
-      if (statusData.state === 'error' && statusData.lastRun?.stageErrors) {
-        const errors = statusData.lastRun.stageErrors;
-        const errorKeys = Object.keys(errors);
-        if (errorKeys.length > 0) {
-          setNotification({
-            message: `Pipeline error in stage: ${errorKeys.join(', ')}. ${errors[errorKeys[0]]}`,
-            resolution:
-              'Check your email/calendar connections and pipeline configuration, then resume the pipeline.',
-          });
+        if (!metricsRes.ok) {
+          const err = await metricsRes.json();
+          setError(err.message ?? 'Failed to load pipeline metrics');
+          return;
         }
-      } else {
-        setNotification(null);
+        if (!statusRes.ok) {
+          const err = await statusRes.json();
+          setError(err.message ?? 'Failed to load pipeline status');
+          return;
+        }
+
+        const metricsData: PipelineMetrics = await metricsRes.json();
+        const statusData: PipelineStatus = await statusRes.json();
+
+        setMetrics(metricsData);
+        setStatus(statusData);
+
+        if (statusData.state === 'error' && statusData.lastRun?.stageErrors) {
+          const errors = statusData.lastRun.stageErrors;
+          const errorKeys = Object.keys(errors);
+          if (errorKeys.length > 0) {
+            setNotification({
+              message: `Pipeline error in stage: ${errorKeys.join(', ')}. ${errors[errorKeys[0]]}`,
+              resolution:
+                'Check your email/calendar connections and pipeline configuration, then resume the pipeline.',
+            });
+          }
+        } else {
+          setNotification(null);
+        }
+      } catch {
+        if (!isPolling) setError('Network error loading pipeline data');
+      } finally {
+        if (!isPolling) setLoading(false);
       }
-    } catch {
-      if (!isPolling) setError('Network error loading pipeline data');
-    } finally {
-      if (!isPolling) setLoading(false);
-    }
-  }, []);
+    },
+    [session],
+  );
 
   // Poll while there's an active run (server-driven)
   const hasActiveRun = status?.hasActiveRun ?? false;
@@ -96,7 +106,7 @@ export default function PipelineDashboard() {
       const res = await fetch('/api/pipeline/pause', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ founderId: FOUNDER_ID }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -117,7 +127,7 @@ export default function PipelineDashboard() {
       const res = await fetch('/api/pipeline/resume', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ founderId: FOUNDER_ID }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -139,7 +149,7 @@ export default function PipelineDashboard() {
       fetch('/api/pipeline/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ founderId: FOUNDER_ID }),
+        body: JSON.stringify({}),
       }).catch(() => {
         // Errors will be picked up by polling
       });
@@ -163,35 +173,45 @@ export default function PipelineDashboard() {
     });
   }
 
-  function statusBadgeClass(state: string): string {
+  function statusBadgeVariant(state: string): 'default' | 'secondary' | 'destructive' | 'outline' {
     switch (state) {
       case 'running':
-        return 'status-badge-running';
+        return 'default';
       case 'paused':
-        return 'status-badge-paused';
+        return 'secondary';
       case 'error':
-        return 'status-badge-error';
+        return 'destructive';
       default:
-        return '';
+        return 'outline';
     }
   }
 
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="dashboard-loading" role="status" aria-live="polite">
-        Loading pipeline dashboard...
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-20" />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+        <Skeleton className="h-12" />
       </div>
     );
   }
 
-  if (error) {
+  if (error && (!metrics || !status)) {
     return (
-      <div className="dashboard-error" role="alert">
-        <p>{error}</p>
-        <button type="button" className="action-btn" onClick={() => fetchData()}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={() => fetchData()}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -202,109 +222,132 @@ export default function PipelineDashboard() {
     : status.state.charAt(0).toUpperCase() + status.state.slice(1);
 
   return (
-    <div className="pipeline-dashboard">
-      <h2>Pipeline Dashboard</h2>
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">Pipeline Dashboard</h2>
 
       {notification && (
-        <section
-          className="pipeline-notification"
-          role="alert"
-          aria-label="Pipeline error notification"
-        >
-          <div className="notification-error">
-            <strong>⚠️ Attention Required</strong>
+        <Alert variant="destructive" role="alert" aria-label="Pipeline error notification">
+          <AlertTitle>⚠️ Attention Required</AlertTitle>
+          <AlertDescription className="space-y-2">
             <p>{notification.message}</p>
             {notification.resolution && (
-              <p className="notification-resolution">
-                <em>Suggested resolution:</em> {notification.resolution}
-              </p>
+              <p className="text-sm italic">Suggested resolution: {notification.resolution}</p>
             )}
-            <button type="button" className="action-btn" onClick={() => setNotification(null)}>
+            <Button variant="outline" size="sm" onClick={() => setNotification(null)}>
               Dismiss
-            </button>
-          </div>
-        </section>
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
-      <section className="pipeline-status-section" aria-label="Pipeline status">
-        <h3>Status</h3>
-        <div className="pipeline-status-row">
-          <span
-            className={`pipeline-status-badge ${hasActiveRun ? 'status-badge-running' : statusBadgeClass(status.state)}`}
-          >
-            {displayState}
-          </span>
-          <span className="pipeline-status-detail">
-            Last run: {formatTimestamp(status.lastRun?.completedAt ?? status.lastRun?.startedAt)}
-          </span>
-          {!hasActiveRun && (
-            <span className="pipeline-status-detail">
-              Next run: {formatTimestamp(status.nextRunAt)}
+      {/* Status */}
+      <Card aria-label="Pipeline status">
+        <CardHeader>
+          <CardTitle>Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-center gap-4">
+            <Badge variant={hasActiveRun ? 'default' : statusBadgeVariant(status.state)}>
+              {displayState}
+            </Badge>
+            <span className="text-sm text-muted-foreground">
+              Last run: {formatTimestamp(status.lastRun?.completedAt ?? status.lastRun?.startedAt)}
             </span>
-          )}
-        </div>
+            {!hasActiveRun && (
+              <span className="text-sm text-muted-foreground">
+                Next run: {formatTimestamp(status.nextRunAt)}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Metrics */}
+      <section
+        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5"
+        aria-label="Daily pipeline metrics"
+      >
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Prospects Discovered
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{metrics.prospectsDiscoveredToday}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Messages Sent
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{metrics.messagesSentToday}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Replies Received
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{metrics.repliesReceivedToday}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Meetings Booked
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{metrics.meetingsBookedToday}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Reply Rate</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{metrics.replyRatePercent.toFixed(1)}%</p>
+          </CardContent>
+        </Card>
       </section>
 
-      <section className="dashboard-metrics" aria-label="Daily pipeline metrics">
-        <div className="metric-card">
-          <span className="metric-value">{metrics.prospectsDiscoveredToday}</span>
-          <span className="metric-label">Prospects Discovered</span>
-        </div>
-        <div className="metric-card">
-          <span className="metric-value">{metrics.messagesSentToday}</span>
-          <span className="metric-label">Messages Sent</span>
-        </div>
-        <div className="metric-card">
-          <span className="metric-value">{metrics.repliesReceivedToday}</span>
-          <span className="metric-label">Replies Received</span>
-        </div>
-        <div className="metric-card">
-          <span className="metric-value">{metrics.meetingsBookedToday}</span>
-          <span className="metric-label">Meetings Booked</span>
-        </div>
-        <div className="metric-card">
-          <span className="metric-value">{metrics.replyRatePercent.toFixed(1)}%</span>
-          <span className="metric-label">Reply Rate</span>
-        </div>
-      </section>
-
-      <section className="pipeline-controls" aria-label="Pipeline controls">
-        <h3>Controls</h3>
-        <div className="pipeline-controls-row">
-          {status.state === 'running' && !hasActiveRun && (
-            <button
-              type="button"
-              className="action-btn action-btn-warning"
-              onClick={handlePause}
-              disabled={actionLoading !== null}
+      {/* Controls */}
+      <Card aria-label="Pipeline controls">
+        <CardHeader>
+          <CardTitle>Controls</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-2">
+            {status.state === 'running' && !hasActiveRun && (
+              <Button variant="outline" onClick={handlePause} disabled={actionLoading !== null}>
+                {actionLoading === 'pause' ? 'Pausing...' : 'Pause Pipeline'}
+              </Button>
+            )}
+            {(status.state === 'paused' || status.state === 'error') && !hasActiveRun && (
+              <Button variant="default" onClick={handleResume} disabled={actionLoading !== null}>
+                {actionLoading === 'resume' ? 'Resuming...' : 'Resume Pipeline'}
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              onClick={handleManualRun}
+              disabled={actionLoading !== null || hasActiveRun}
             >
-              {actionLoading === 'pause' ? 'Pausing...' : 'Pause Pipeline'}
-            </button>
-          )}
-          {(status.state === 'paused' || status.state === 'error') && !hasActiveRun && (
-            <button
-              type="button"
-              className="action-btn action-btn-success"
-              onClick={handleResume}
-              disabled={actionLoading !== null}
-            >
-              {actionLoading === 'resume' ? 'Resuming...' : 'Resume Pipeline'}
-            </button>
-          )}
-          <button
-            type="button"
-            className="action-btn"
-            onClick={handleManualRun}
-            disabled={actionLoading !== null || hasActiveRun}
-          >
-            {hasActiveRun
-              ? 'Pipeline Running...'
-              : actionLoading === 'run'
-                ? 'Starting...'
-                : 'Run Now'}
-          </button>
-        </div>
-      </section>
+              {hasActiveRun
+                ? 'Pipeline Running...'
+                : actionLoading === 'run'
+                  ? 'Starting...'
+                  : 'Run Now'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

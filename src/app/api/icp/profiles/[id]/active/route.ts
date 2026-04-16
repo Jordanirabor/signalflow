@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { setProfileActive } from '@/services/icpProfileService';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -10,9 +11,14 @@ type RouteContext = { params: Promise<{ id: string }> };
  *
  * Request body: { isActive: boolean }
  *
- * Requirements: 3.3, 3.4
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   let body: Record<string, unknown>;

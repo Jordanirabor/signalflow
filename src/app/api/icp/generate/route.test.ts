@@ -7,6 +7,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGenerateICPSet = vi.fn();
 const mockGetICPSet = vi.fn();
+const mockGetSession = vi.fn();
+
+vi.mock('@/lib/auth', () => ({
+  getSession: (...args: unknown[]) => mockGetSession(...args),
+}));
 
 vi.mock('@/services/icpGeneratorService', () => {
   class ICPGenerationError extends Error {
@@ -38,6 +43,15 @@ function makeRequest(body: Record<string, unknown>): NextRequest {
     body: JSON.stringify(body),
   });
 }
+
+const SESSION = {
+  founderId: 'founder-1',
+  email: 'test@example.com',
+  name: 'Test User',
+  sub: 'sub-1',
+  accessToken: 'token',
+  expiresAt: Date.now() + 3600000,
+};
 
 const generatedResult = {
   profiles: [
@@ -92,6 +106,15 @@ import { POST } from './route';
 describe('POST /api/icp/generate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(SESSION);
+  });
+
+  it('returns 401 when session is absent', async () => {
+    mockGetSession.mockResolvedValue(null);
+    const res = await POST(makeRequest({ productDescription: 'test' }));
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json.error).toBe('Unauthorized');
   });
 
   it('returns 400 when body is not valid JSON', async () => {
@@ -122,9 +145,7 @@ describe('POST /api/icp/generate', () => {
   it('returns generated ICP set on success', async () => {
     mockGenerateICPSet.mockResolvedValue(generatedResult);
 
-    const res = await POST(
-      makeRequest({ productDescription: 'AI code review platform', founderId: 'founder-1' }),
-    );
+    const res = await POST(makeRequest({ productDescription: 'AI code review platform' }));
     expect(res.status).toBe(200);
 
     const json = await res.json();
@@ -134,31 +155,29 @@ describe('POST /api/icp/generate', () => {
     expect(json.profiles[1].targetRole).toBe('VP Engineering');
   });
 
-  it('calls generateICPSet with trimmed description and founderId', async () => {
+  it('calls generateICPSet with trimmed description and session founderId', async () => {
+    mockGenerateICPSet.mockResolvedValue(generatedResult);
+
+    await POST(makeRequest({ productDescription: '  AI code review platform  ' }));
+
+    expect(mockGenerateICPSet).toHaveBeenCalledWith('AI code review platform', 'founder-1');
+  });
+
+  it('ignores client-supplied founderId and uses session founderId', async () => {
     mockGenerateICPSet.mockResolvedValue(generatedResult);
 
     await POST(
-      makeRequest({ productDescription: '  AI code review platform  ', founderId: 'founder-1' }),
+      makeRequest({ productDescription: 'AI code review platform', founderId: 'attacker-id' }),
     );
 
     expect(mockGenerateICPSet).toHaveBeenCalledWith('AI code review platform', 'founder-1');
   });
 
-  it('uses "anonymous" as founderId when not provided', async () => {
-    mockGenerateICPSet.mockResolvedValue(generatedResult);
-
-    await POST(makeRequest({ productDescription: 'AI code review platform' }));
-
-    expect(mockGenerateICPSet).toHaveBeenCalledWith('AI code review platform', 'anonymous');
-  });
-
-  it('returns 502 with existing ICP set on AI failure when founderId provided', async () => {
+  it('returns 502 with existing ICP set on AI failure', async () => {
     mockGenerateICPSet.mockRejectedValue(new Error('OpenAI timeout'));
     mockGetICPSet.mockResolvedValue(existingICPSet);
 
-    const res = await POST(
-      makeRequest({ productDescription: 'AI code review platform', founderId: 'founder-1' }),
-    );
+    const res = await POST(makeRequest({ productDescription: 'AI code review platform' }));
     expect(res.status).toBe(502);
 
     const json = await res.json();
@@ -169,24 +188,11 @@ describe('POST /api/icp/generate', () => {
     expect(json.existingICPSet.profiles[0].targetRole).toBe('CTO');
   });
 
-  it('returns 502 without existing ICP set on AI failure when no founderId', async () => {
-    mockGenerateICPSet.mockRejectedValue(new Error('OpenAI timeout'));
-
-    const res = await POST(makeRequest({ productDescription: 'AI code review platform' }));
-    expect(res.status).toBe(502);
-
-    const json = await res.json();
-    expect(json.error).toBe('GENERATION_FAILED');
-    expect(json.existingICPSet).toBeUndefined();
-  });
-
-  it('returns 502 generic error when founderId provided but no existing profiles', async () => {
+  it('returns 502 generic error when no existing profiles', async () => {
     mockGenerateICPSet.mockRejectedValue(new Error('AI failed'));
     mockGetICPSet.mockResolvedValue({ founderId: 'founder-1', profiles: [], activeCount: 0 });
 
-    const res = await POST(
-      makeRequest({ productDescription: 'AI code review platform', founderId: 'founder-1' }),
-    );
+    const res = await POST(makeRequest({ productDescription: 'AI code review platform' }));
     expect(res.status).toBe(502);
 
     const json = await res.json();
@@ -198,9 +204,7 @@ describe('POST /api/icp/generate', () => {
     mockGenerateICPSet.mockRejectedValue(new Error('AI failed'));
     mockGetICPSet.mockRejectedValue(new Error('DB down'));
 
-    const res = await POST(
-      makeRequest({ productDescription: 'AI code review platform', founderId: 'founder-1' }),
-    );
+    const res = await POST(makeRequest({ productDescription: 'AI code review platform' }));
     expect(res.status).toBe(502);
 
     const json = await res.json();
@@ -209,13 +213,12 @@ describe('POST /api/icp/generate', () => {
   });
 
   it('returns 400 for ICPGenerationError with VALIDATION_ERROR code', async () => {
-    // Import the mocked ICPGenerationError
     const { ICPGenerationError } = await import('@/services/icpGeneratorService');
     mockGenerateICPSet.mockRejectedValue(
       new ICPGenerationError('Product description is required', 'VALIDATION_ERROR'),
     );
 
-    const res = await POST(makeRequest({ productDescription: 'test', founderId: 'founder-1' }));
+    const res = await POST(makeRequest({ productDescription: 'test' }));
     expect(res.status).toBe(400);
 
     const json = await res.json();

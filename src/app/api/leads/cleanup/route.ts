@@ -1,4 +1,5 @@
 import { dbWriteError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { NextResponse } from 'next/server';
 
@@ -8,20 +9,25 @@ import { NextResponse } from 'next/server';
  * Purges soft-deleted lead records older than 30 days, along with
  * their associated child records (outreach, status changes, call notes, tags).
  *
- * Requirements: 10.5
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 10.5
  */
 export async function POST() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
 
     // Delete child records first (foreign key constraints), then the leads.
-    // We use a CTE to identify the target lead IDs once.
+    // We use a CTE to identify the target lead IDs once, scoped to this founder.
     const result = await query<{ purged: number }>(
       `
       WITH expired_leads AS (
         SELECT id FROM lead
-        WHERE is_deleted = true AND deleted_at IS NOT NULL AND deleted_at < $1
+        WHERE founder_id = $2 AND is_deleted = true AND deleted_at IS NOT NULL AND deleted_at < $1
       ),
       deleted_tags AS (
         DELETE FROM tag
@@ -45,7 +51,7 @@ export async function POST() {
       )
       SELECT COUNT(*)::int AS purged FROM deleted_leads
       `,
-      [cutoff.toISOString()],
+      [cutoff.toISOString(), session.founderId],
     );
 
     const purged = result.rows[0]?.purged ?? 0;

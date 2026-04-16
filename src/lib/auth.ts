@@ -17,6 +17,7 @@ export interface UserSession {
   sub: string;
   email?: string;
   name?: string;
+  founderId: string;
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
@@ -168,4 +169,52 @@ export async function clearSession(): Promise<void> {
  */
 export function generateRandom(length = 48): string {
   return crypto.randomBytes(length).toString('base64url');
+}
+
+import { query } from '@/lib/db';
+
+/**
+ * Find or create a founder record for the given OIDC user.
+ * On first login, creates a new founder. On subsequent logins, returns the existing one.
+ */
+export async function findOrCreateFounder(userInfo: {
+  sub: string;
+  email?: string;
+  name?: string;
+}): Promise<string> {
+  // Check if a founder with this oidc_sub already exists
+  const existing = await query<{ id: string }>('SELECT id FROM founder WHERE oidc_sub = $1', [
+    userInfo.sub,
+  ]);
+
+  if (existing.rows.length > 0) {
+    return existing.rows[0].id;
+  }
+
+  // Check if there's a founder with matching email but no oidc_sub (e.g., the seed record)
+  if (userInfo.email) {
+    const byEmail = await query<{ id: string }>('SELECT id FROM founder WHERE email = $1', [
+      userInfo.email,
+    ]);
+
+    if (byEmail.rows.length > 0) {
+      // Link the existing founder to this OIDC user
+      await query('UPDATE founder SET oidc_sub = $1, name = COALESCE($2, name) WHERE id = $3', [
+        userInfo.sub,
+        userInfo.name,
+        byEmail.rows[0].id,
+      ]);
+      return byEmail.rows[0].id;
+    }
+  }
+
+  // Create a new founder
+  const result = await query<{ id: string }>(
+    `INSERT INTO founder (email, name, oidc_sub)
+     VALUES ($1, $2, $3)
+     RETURNING id`,
+    [userInfo.email ?? `${userInfo.sub}@consentkeys.user`, userInfo.name ?? 'User', userInfo.sub],
+  );
+
+  return result.rows[0].id;
 }

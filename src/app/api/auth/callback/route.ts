@@ -1,4 +1,4 @@
-import { exchangeCodeForTokens, fetchUserInfo, setSession } from '@/lib/auth';
+import { exchangeCodeForTokens, fetchUserInfo, findOrCreateFounder, setSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -49,11 +49,13 @@ export async function GET(request: NextRequest) {
 
     const tokens = await exchangeCodeForTokens(code, redirectUri, codeVerifier);
     const userInfo = await fetchUserInfo(tokens.access_token);
+    const founderId = await findOrCreateFounder(userInfo);
 
     await setSession({
       sub: userInfo.sub,
       email: userInfo.email,
       name: userInfo.name,
+      founderId,
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       expiresAt: Date.now() + tokens.expires_in * 1000,

@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import {
   getPipelineConfig,
   savePipelineConfig,
@@ -8,17 +9,17 @@ import type { PipelineConfig } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * GET /api/pipeline/config?founderId=<uuid>
+ * GET /api/pipeline/config
  * Returns the current pipeline configuration (or defaults).
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const config = await getPipelineConfig(founderId);
+    const config = await getPipelineConfig(session.founderId);
     return NextResponse.json(config);
   } catch {
     return dbWriteError('Failed to retrieve pipeline config');
@@ -32,15 +33,16 @@ export async function GET(request: NextRequest) {
  * Requirements: 12.1, 12.2, 12.3, 12.4, 12.5
  */
 export async function PUT(request: NextRequest) {
-  let body: Partial<PipelineConfig> & { founderId?: string };
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let body: Partial<PipelineConfig>;
   try {
     body = await request.json();
   } catch {
     return validationError('Invalid JSON body');
-  }
-
-  if (!body.founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
   }
 
   const validation = validatePipelineConfig(body);
@@ -48,12 +50,14 @@ export async function PUT(request: NextRequest) {
     return validationError('Pipeline configuration values out of allowed range', validation.errors);
   }
 
+  const founderId = session.founderId;
+
   try {
     // Get current config to fill in defaults for unspecified fields
-    const current = await getPipelineConfig(body.founderId);
+    const current = await getPipelineConfig(founderId);
 
     const merged: PipelineConfig = {
-      founderId: body.founderId,
+      founderId,
       runIntervalMinutes: body.runIntervalMinutes ?? current.runIntervalMinutes,
       businessHoursStart: body.businessHoursStart ?? current.businessHoursStart,
       businessHoursEnd: body.businessHoursEnd ?? current.businessHoursEnd,

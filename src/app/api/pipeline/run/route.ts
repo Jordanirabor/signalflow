@@ -1,6 +1,7 @@
-import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { dbWriteError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { executePipelineRun } from '@/services/pipelineOrchestratorService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
  * POST /api/pipeline/run
@@ -8,20 +9,14 @@ import { NextRequest, NextResponse } from 'next/server';
  *
  * Requirements: 1.2
  */
-export async function POST(request: NextRequest) {
-  let body: { founderId?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return validationError('Invalid JSON body');
-  }
-
-  if (!body.founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
+export async function POST() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const run = await executePipelineRun(body.founderId);
+    const run = await executePipelineRun(session.founderId);
     return NextResponse.json(run);
   } catch {
     return dbWriteError('Failed to execute pipeline run');

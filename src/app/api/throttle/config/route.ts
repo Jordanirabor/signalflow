@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import {
   getThrottleConfig,
   saveThrottleConfig,
@@ -7,17 +8,19 @@ import {
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * GET /api/throttle/config?founderId=<uuid>
+ * GET /api/throttle/config
  * Returns the current throttle configuration (or defaults).
+ *
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const config = await getThrottleConfig(founderId);
+    const config = await getThrottleConfig(session.founderId);
     return NextResponse.json(config);
   } catch {
     return dbWriteError('Failed to retrieve throttle config');
@@ -28,18 +31,19 @@ export async function GET(request: NextRequest) {
  * PUT /api/throttle/config
  * Update throttle limits. Validates range [5, 50].
  *
- * Requirements: 9.4, 9.5
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 9.4, 9.5
  */
 export async function PUT(request: NextRequest) {
-  let body: { founderId?: string; emailLimit?: number; dmLimit?: number };
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let body: { emailLimit?: number; dmLimit?: number };
   try {
     body = await request.json();
   } catch {
     return validationError('Invalid JSON body');
-  }
-
-  if (!body.founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
   }
 
   if (body.emailLimit === undefined && body.dmLimit === undefined) {
@@ -56,11 +60,11 @@ export async function PUT(request: NextRequest) {
 
   try {
     // Get current config to fill in defaults for unspecified fields
-    const current = await getThrottleConfig(body.founderId);
+    const current = await getThrottleConfig(session.founderId);
     const emailLimit = body.emailLimit ?? current.emailLimit;
     const dmLimit = body.dmLimit ?? current.dmLimit;
 
-    const config = await saveThrottleConfig(body.founderId, emailLimit, dmLimit);
+    const config = await saveThrottleConfig(session.founderId, emailLimit, dmLimit);
     return NextResponse.json(config);
   } catch {
     return dbWriteError('Failed to update throttle config');

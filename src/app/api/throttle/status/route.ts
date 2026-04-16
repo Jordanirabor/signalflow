@@ -1,18 +1,19 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getThrottleStatus } from '@/services/throttleService';
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * GET /api/throttle/status?founderId=<uuid>&channel=<email|dm>
+ * GET /api/throttle/status
  * Returns current throttle usage, limits, remaining capacity, and warning flag.
  * If no channel is specified, returns status for both channels.
  *
- * Requirements: 9.1, 9.2, 9.3
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 9.1, 9.2, 9.3
  */
 export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const channel = request.nextUrl.searchParams.get('channel') as 'email' | 'dm' | null;
@@ -22,14 +23,14 @@ export async function GET(request: NextRequest) {
 
   try {
     if (channel) {
-      const status = await getThrottleStatus(founderId, channel);
+      const status = await getThrottleStatus(session.founderId, channel);
       return NextResponse.json(status);
     }
 
     // Return both channels
     const [emailStatus, dmStatus] = await Promise.all([
-      getThrottleStatus(founderId, 'email'),
-      getThrottleStatus(founderId, 'dm'),
+      getThrottleStatus(session.founderId, 'email'),
+      getThrottleStatus(session.founderId, 'dm'),
     ]);
     return NextResponse.json({ email: emailStatus, dm: dmStatus });
   } catch {

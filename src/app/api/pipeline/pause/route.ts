@@ -1,6 +1,6 @@
-import { validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getPipelineState, pausePipeline } from '@/services/pipelineOrchestratorService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
  * POST /api/pipeline/pause
@@ -9,14 +9,13 @@ import { NextRequest, NextResponse } from 'next/server';
  *
  * Requirements: 1.5
  */
-export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => ({}));
-  const founderId = body.founderId;
-  if (!founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
+export async function POST() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  await pausePipeline(founderId);
-  const state = await getPipelineState(founderId);
+  await pausePipeline(session.founderId);
+  const state = await getPipelineState(session.founderId);
   return NextResponse.json({ state, message: 'Pipeline paused' });
 }

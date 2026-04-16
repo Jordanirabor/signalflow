@@ -1,33 +1,27 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { recalculateCorrelationScores } from '@/services/correlationEngineService';
 import { getICP } from '@/services/icpService';
 import { calculateLeadScore } from '@/services/scoringService';
 import type { EnrichmentData } from '@/types';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
  * POST /api/leads/recalculate
  * Internal endpoint: recalculates lead scores for all non-deleted leads
  * belonging to a founder, using their current ICP.
  *
- * Body: { founderId: string }
- *
  * Triggered by ICP save (task 2.1).
- * Requirements: 1.4, 3.4, 3.7
+ * Requirements: 1.4, 3.1, 3.2, 3.3, 3.4, 3.7
  */
-export async function POST(request: NextRequest) {
-  let body: { founderId?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return validationError('Invalid JSON body');
+export async function POST() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { founderId } = body;
-  if (!founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
-  }
+  const founderId = session.founderId;
 
   try {
     // 1. Fetch the founder's current ICP

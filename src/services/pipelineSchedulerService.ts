@@ -1,4 +1,3 @@
-import { FOUNDER_ID } from '@/lib/constants';
 import { getPipelineConfig } from '@/services/pipelineConfigService';
 import {
   computeNextRunTime,
@@ -10,6 +9,13 @@ import * as cron from 'node-cron';
 // ---------------------------------------------------------------------------
 // Scheduler state
 // ---------------------------------------------------------------------------
+
+/**
+ * TODO: The pipeline scheduler currently uses a hardcoded founder ID.
+ * This should be refactored to iterate over all active founders or accept
+ * a founderId parameter once multi-tenant scheduling is implemented.
+ */
+const FOUNDER_ID = '00000000-0000-0000-0000-000000000001';
 
 let cronTask: cron.ScheduledTask | null = null;
 let isRunning = false;

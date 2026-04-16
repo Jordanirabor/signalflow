@@ -1,22 +1,24 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getPipeline, isValidCRMStatus, type PipelineFilters } from '@/services/crmService';
 import type { CRMStatus } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * GET /api/crm/pipeline?founderId=<uuid>&status=<CRMStatus>&minScore=<n>&maxScore=<n>&lastActivityAfter=<ISO date>
+ * GET /api/crm/pipeline?status=<CRMStatus>&minScore=<n>&maxScore=<n>&lastActivityAfter=<ISO date>
  * Get all leads grouped by CRM status with aggregate counts.
  * Supports filtering by status, score range, and last activity date.
  *
  * Requirements: 6.1, 6.3, 6.5
  */
 export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
-  const founderId = searchParams.get('founderId');
-
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const searchParams = request.nextUrl.searchParams;
+  const founderId = session.founderId;
 
   const filters: PipelineFilters = { founderId };
 

@@ -1,10 +1,39 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { ConversationMessage, ConversationThread } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 
+function classificationVariant(
+  classification: string,
+): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (classification) {
+    case 'interested':
+      return 'default';
+    case 'not_interested':
+      return 'destructive';
+    case 'objection':
+      return 'destructive';
+    case 'question':
+      return 'secondary';
+    case 'out_of_office':
+      return 'outline';
+    default:
+      return 'secondary';
+  }
+}
+
+function formatClassification(classification: string): string {
+  return classification.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function ConversationView() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [selectedThread, setSelectedThread] = useState<ConversationThread | null>(null);
   const [loading, setLoading] = useState(true);
@@ -12,10 +41,11 @@ export default function ConversationView() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchThreads = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/pipeline/conversations?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/pipeline/conversations');
       if (!res.ok) {
         const err = await res.json();
         setError(err.message ?? 'Failed to load conversations');
@@ -28,7 +58,7 @@ export default function ConversationView() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetchThreads();
@@ -38,7 +68,7 @@ export default function ConversationView() {
     setThreadLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/pipeline/conversations/${leadId}?founderId=${FOUNDER_ID}`);
+      const res = await fetch(`/api/pipeline/conversations/${leadId}`);
       if (!res.ok) {
         const err = await res.json();
         setError(err.message ?? 'Failed to load conversation');
@@ -63,120 +93,117 @@ export default function ConversationView() {
     });
   }
 
-  function classificationBadgeClass(classification: string): string {
-    switch (classification) {
-      case 'interested':
-        return 'classification-badge-interested';
-      case 'not_interested':
-        return 'classification-badge-not-interested';
-      case 'objection':
-        return 'classification-badge-objection';
-      case 'question':
-        return 'classification-badge-question';
-      case 'out_of_office':
-        return 'classification-badge-ooo';
-      default:
-        return '';
-    }
-  }
-
-  function formatClassification(classification: string): string {
-    return classification.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="dashboard-loading" role="status" aria-live="polite">
-        Loading conversations...
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Skeleton className="h-64" />
+          <Skeleton className="col-span-2 h-64" />
+        </div>
       </div>
     );
   }
 
   if (error && !selectedThread && threads.length === 0) {
     return (
-      <div className="dashboard-error" role="alert">
-        <p>{error}</p>
-        <button type="button" className="action-btn" onClick={fetchThreads}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchThreads}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <div className="conversation-view">
-      <h2>Conversations</h2>
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">Conversations</h2>
 
       {error && (
-        <div className="conversation-error" role="alert">
-          <p>{error}</p>
-        </div>
+        <Alert variant="destructive" role="alert">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
-      <div className="conversation-layout">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {/* Thread List */}
-        <section className="conversation-thread-list" aria-label="Conversation threads">
-          <h3>Threads</h3>
-          {threads.length === 0 ? (
-            <p className="empty-state">No conversations yet.</p>
-          ) : (
-            <ul className="thread-list">
-              {threads.map((thread) => (
-                <li key={thread.leadId}>
-                  <button
-                    type="button"
-                    className={`thread-item ${selectedThread?.leadId === thread.leadId ? 'thread-item-active' : ''}`}
-                    onClick={() => selectThread(thread.leadId)}
-                  >
-                    <span className="thread-lead-name">{thread.leadName}</span>
-                    <span className="thread-company">{thread.company}</span>
-                    <span className="thread-message-count">
-                      {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <Card aria-label="Conversation threads">
+          <CardHeader>
+            <CardTitle>Threads</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {threads.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No conversations yet.</p>
+            ) : (
+              <ul className="space-y-1">
+                {threads.map((thread) => (
+                  <li key={thread.leadId}>
+                    <Button
+                      variant={selectedThread?.leadId === thread.leadId ? 'secondary' : 'ghost'}
+                      className="w-full justify-start text-left h-auto py-2"
+                      onClick={() => selectThread(thread.leadId)}
+                    >
+                      <div className="flex flex-col items-start gap-0.5">
+                        <span className="font-medium text-sm">{thread.leadName}</span>
+                        <span className="text-xs text-muted-foreground">{thread.company}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Thread Detail */}
-        <section className="conversation-thread-detail" aria-label="Conversation messages">
-          {threadLoading ? (
-            <div className="dashboard-loading" role="status" aria-live="polite">
-              Loading thread...
-            </div>
-          ) : selectedThread ? (
-            <>
-              <div className="thread-header">
-                <h3>{selectedThread.leadName}</h3>
-                <span className="thread-header-company">{selectedThread.company}</span>
+        <Card className="md:col-span-2" aria-label="Conversation messages">
+          <CardContent className="pt-6">
+            {threadLoading ? (
+              <div className="space-y-3" role="status" aria-live="polite">
+                <Skeleton className="h-6 w-40" />
+                <Skeleton className="h-20" />
+                <Skeleton className="h-20" />
               </div>
-              <div className="thread-messages">
+            ) : selectedThread ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-lg font-semibold">{selectedThread.leadName}</h3>
+                  <p className="text-sm text-muted-foreground">{selectedThread.company}</p>
+                </div>
                 {selectedThread.messages.length === 0 ? (
-                  <p className="empty-state">No messages in this thread.</p>
+                  <p className="text-sm text-muted-foreground">No messages in this thread.</p>
                 ) : (
-                  <ol className="message-list" aria-label="Messages in chronological order">
+                  <ol className="space-y-3" aria-label="Messages in chronological order">
                     {selectedThread.messages.map((msg: ConversationMessage) => (
-                      <li key={msg.id} className={`message-item message-${msg.direction}`}>
-                        <div className="message-meta">
-                          <span className="message-direction">
+                      <li
+                        key={msg.id}
+                        className={`rounded-lg border p-3 ${
+                          msg.direction === 'outbound' ? 'ml-8 bg-muted/50' : 'mr-8'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant={msg.direction === 'outbound' ? 'secondary' : 'outline'}>
                             {msg.direction === 'outbound' ? 'Sent' : 'Received'}
-                          </span>
-                          <span className="message-timestamp">
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
                             {formatTimestamp(msg.timestamp)}
                           </span>
                         </div>
-                        <div className="message-content">{msg.content}</div>
+                        <p className="text-sm">{msg.content}</p>
                         {msg.direction === 'inbound' && msg.classification && (
-                          <div className="message-classification">
-                            <span
-                              className={`classification-badge ${classificationBadgeClass(msg.classification)}`}
-                            >
+                          <div className="flex items-center gap-2 mt-2">
+                            <Badge variant={classificationVariant(msg.classification)}>
                               {formatClassification(msg.classification)}
-                            </span>
+                            </Badge>
                             {msg.confidence != null && (
-                              <span className="classification-confidence">
+                              <span className="text-xs text-muted-foreground">
                                 {(msg.confidence * 100).toFixed(0)}% confidence
                               </span>
                             )}
@@ -187,11 +214,13 @@ export default function ConversationView() {
                   </ol>
                 )}
               </div>
-            </>
-          ) : (
-            <p className="empty-state">Select a conversation to view messages.</p>
-          )}
-        </section>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Select a conversation to view messages.
+              </p>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

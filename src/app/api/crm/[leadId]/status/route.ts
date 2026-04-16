@@ -4,6 +4,7 @@ import {
   reasonRequiredError,
   validationError,
 } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import {
   changeLeadStatus,
   getStatusHistory,
@@ -24,6 +25,11 @@ type RouteContext = { params: Promise<{ leadId: string }> };
  * Requirements: 6.1, 6.2, 6.4, 6.6
  */
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { leadId } = await context.params;
 
   let body: { toStatus: string; reason?: string; meetingDate?: string };
@@ -93,6 +99,11 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
  * Requirements: 6.2
  */
 export async function GET(_request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { leadId } = await context.params;
 
   try {

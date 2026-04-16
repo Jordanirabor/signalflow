@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import {
   deleteICPProfile,
   getICPProfileById,
@@ -12,9 +13,14 @@ type RouteContext = { params: Promise<{ id: string }> };
  * GET /api/icp/profiles/:id
  * Return a single ICP profile by ID.
  *
- * Requirements: 3.2
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
 export async function GET(_request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   try {
@@ -31,10 +37,16 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 /**
  * PUT /api/icp/profiles/:id
  * Validate and update an ICP profile.
+ * founderId is derived from the server-side session.
  *
- * Requirements: 3.2
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
 export async function PUT(request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   let body: Record<string, unknown>;
@@ -43,6 +55,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   } catch {
     return validationError('Invalid JSON body');
   }
+
+  // Override any client-supplied founderId with session value
+  body.founderId = session.founderId;
 
   try {
     const profile = await updateICPProfile(id, body as Parameters<typeof updateICPProfile>[1]);
@@ -63,9 +78,14 @@ export async function PUT(request: NextRequest, context: RouteContext) {
  * DELETE /api/icp/profiles/:id
  * Delete an ICP profile. Leads are retained via ON DELETE SET NULL.
  *
- * Requirements: 3.6
+ * Requirements: 3.1, 3.2, 3.6
  */
 export async function DELETE(_request: NextRequest, context: RouteContext) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { id } = await context.params;
 
   try {

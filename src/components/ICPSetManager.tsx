@@ -1,6 +1,12 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { ICPProfile, ICPSet } from '@/types';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import ICPProfileCard from './ICPProfileCard';
@@ -10,6 +16,7 @@ interface ICPSetManagerProps {
 }
 
 export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
+  const { session, isLoading: sessionLoading } = useSession();
   const [icpSet, setIcpSet] = useState<ICPSet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,10 +30,11 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
   const [addError, setAddError] = useState<string | null>(null);
 
   const fetchICPSet = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/icp/profiles?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/icp/profiles');
       if (!res.ok) {
         throw new Error('Failed to load ICP profiles');
       }
@@ -37,7 +45,7 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetchICPSet();
@@ -112,7 +120,6 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          founderId: FOUNDER_ID,
           targetRole: newTargetRole.trim(),
           industry: newIndustry.trim(),
           painPoints: filteredPainPoints,
@@ -130,7 +137,7 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
       setIcpSet((prev) => {
         if (!prev) {
           return {
-            founderId: FOUNDER_ID,
+            founderId: session?.founderId ?? '',
             profiles: [created],
             activeCount: created.isActive ? 1 : 0,
           };
@@ -148,24 +155,33 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
     }
   }
 
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="icp-set-manager">
-        <div className="icp-set-manager-loading">Loading ICP profiles…</div>
+      <div className="space-y-4" role="status" aria-live="polite">
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-9 w-28" />
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-48" />
+          ))}
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="icp-set-manager">
-        <div className="form-feedback error" role="alert">
-          {error}
-        </div>
-        <button type="button" className="action-btn" onClick={fetchICPSet}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchICPSet}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -173,129 +189,144 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
   const activeCount = icpSet?.activeCount ?? 0;
 
   return (
-    <div className="icp-set-manager">
-      <div className="icp-set-manager-header">
-        <div className="icp-set-manager-title-row">
-          <h2>ICP Profiles</h2>
-          <span className="icp-set-manager-badge">{activeCount} active</span>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold tracking-tight">ICP Profiles</h2>
+          <Badge variant="secondary">{activeCount} active</Badge>
         </div>
-        <div className="icp-set-manager-actions">
-          <button
-            type="button"
-            className="action-btn"
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
             onClick={() => {
               resetAddForm();
               setShowAddForm((prev) => !prev);
             }}
           >
             {showAddForm ? 'Cancel' : 'Add Profile'}
-          </button>
+          </Button>
           {onRegenerate && (
-            <button type="button" className="action-btn icp-regenerate-btn" onClick={onRegenerate}>
+            <Button variant="secondary" onClick={onRegenerate}>
               Regenerate ICPs
-            </button>
+            </Button>
           )}
         </div>
       </div>
 
       {showAddForm && (
-        <form onSubmit={handleAddProfile} className="icp-add-form" noValidate>
-          {addError && (
-            <div className="form-feedback error" role="alert">
-              {addError}
-            </div>
-          )}
-          <div className="form-row">
-            <div className="form-field">
-              <label htmlFor="add-targetRole">
-                Target Role <span aria-hidden="true">*</span>
-              </label>
-              <input
-                id="add-targetRole"
-                type="text"
-                value={newTargetRole}
-                onChange={(e) => setNewTargetRole(e.target.value)}
-                aria-required="true"
-                placeholder="e.g. VP of Engineering"
-              />
-            </div>
-            <div className="form-field">
-              <label htmlFor="add-industry">
-                Industry <span aria-hidden="true">*</span>
-              </label>
-              <input
-                id="add-industry"
-                type="text"
-                value={newIndustry}
-                onChange={(e) => setNewIndustry(e.target.value)}
-                aria-required="true"
-                placeholder="e.g. SaaS, Fintech"
-              />
-            </div>
-          </div>
-          <div className="form-field">
-            <label>
-              Pain Points <span aria-hidden="true">*</span>
-            </label>
-            {newPainPoints.map((pp, i) => (
-              <div key={i} className="icp-list-edit-row">
-                <input
-                  type="text"
-                  value={pp}
-                  onChange={(e) => handleAddPainPointChange(i, e.target.value)}
-                  placeholder={`Pain point ${i + 1}`}
-                  maxLength={200}
-                  aria-label={`Pain point ${i + 1}`}
-                />
-                {newPainPoints.length > 1 && (
-                  <button
-                    type="button"
-                    className="btn-delete icp-list-remove-btn"
-                    onClick={() => removePainPointField(i)}
-                    aria-label={`Remove pain point ${i + 1}`}
-                  >
-                    ✕
-                  </button>
+        <Card>
+          <CardHeader>
+            <CardTitle>Add New Profile</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleAddProfile} className="space-y-4" noValidate>
+              {addError && (
+                <Alert variant="destructive" role="alert">
+                  <AlertDescription>{addError}</AlertDescription>
+                </Alert>
+              )}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label htmlFor="add-targetRole" className="text-sm font-medium">
+                    Target Role <span aria-hidden="true">*</span>
+                  </label>
+                  <Input
+                    id="add-targetRole"
+                    type="text"
+                    value={newTargetRole}
+                    onChange={(e) => setNewTargetRole(e.target.value)}
+                    aria-required="true"
+                    placeholder="e.g. VP of Engineering"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="add-industry" className="text-sm font-medium">
+                    Industry <span aria-hidden="true">*</span>
+                  </label>
+                  <Input
+                    id="add-industry"
+                    type="text"
+                    value={newIndustry}
+                    onChange={(e) => setNewIndustry(e.target.value)}
+                    aria-required="true"
+                    placeholder="e.g. SaaS, Fintech"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">
+                  Pain Points <span aria-hidden="true">*</span>
+                </label>
+                {newPainPoints.map((pp, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      type="text"
+                      value={pp}
+                      onChange={(e) => handleAddPainPointChange(i, e.target.value)}
+                      placeholder={`Pain point ${i + 1}`}
+                      maxLength={200}
+                      aria-label={`Pain point ${i + 1}`}
+                    />
+                    {newPainPoints.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="icon"
+                        onClick={() => removePainPointField(i)}
+                        aria-label={`Remove pain point ${i + 1}`}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                  </div>
+                ))}
+                {newPainPoints.length < 10 && (
+                  <Button type="button" variant="ghost" size="sm" onClick={addPainPointField}>
+                    + Add Pain Point
+                  </Button>
                 )}
               </div>
-            ))}
-            {newPainPoints.length < 10 && (
-              <button
-                type="button"
-                className="action-btn icp-list-add-btn"
-                onClick={addPainPointField}
-              >
-                + Add Pain Point
-              </button>
-            )}
-          </div>
-          <div className="icp-add-form-actions">
-            <button type="submit" className="action-btn" disabled={addSaving}>
-              {addSaving ? 'Creating…' : 'Create Profile'}
-            </button>
-            <button
-              type="button"
-              className="action-btn icp-cancel-btn"
-              onClick={() => {
-                resetAddForm();
-                setShowAddForm(false);
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+              <div className="flex gap-2">
+                <Button type="submit" disabled={addSaving}>
+                  {addSaving ? 'Creating…' : 'Create Profile'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    resetAddForm();
+                    setShowAddForm(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
       )}
 
       {profiles.length === 0 ? (
-        <div className="icp-set-manager-empty">
-          <p>
-            No ICP profiles yet. Add a profile manually or generate ICPs from your product
-            description.
-          </p>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <p className="text-muted-foreground">
+              No ICP profiles yet. Add a profile manually or generate ICPs from your product
+              description.
+            </p>
+            <Button
+              variant="outline"
+              className="mt-4"
+              onClick={() => {
+                resetAddForm();
+                setShowAddForm(true);
+              }}
+            >
+              Add Your First Profile
+            </Button>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="icp-set-manager-grid">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {profiles.map((profile) => (
             <ICPProfileCard
               key={profile.id}

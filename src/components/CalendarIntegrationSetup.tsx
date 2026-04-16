@@ -1,6 +1,12 @@
 'use client';
 
-import { FOUNDER_ID } from '@/lib/constants';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useSession } from '@/hooks/useSession';
 import type { AvailabilityWindow } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -29,6 +35,7 @@ function buildDefaultDays(): DayConfig[] {
 }
 
 export default function CalendarIntegrationSetup() {
+  const { session, isLoading: sessionLoading } = useSession();
   const [status, setStatus] = useState<CalendarStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,12 +48,13 @@ export default function CalendarIntegrationSetup() {
   );
 
   const fetchStatus = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
       const [statusRes, windowsRes] = await Promise.all([
-        fetch(`/api/pipeline/calendar/status?founderId=${FOUNDER_ID}`),
-        fetch(`/api/pipeline/calendar?founderId=${FOUNDER_ID}`),
+        fetch('/api/pipeline/calendar/status'),
+        fetch('/api/pipeline/calendar'),
       ]);
 
       if (!statusRes.ok) {
@@ -86,7 +94,7 @@ export default function CalendarIntegrationSetup() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetchStatus();
@@ -95,7 +103,7 @@ export default function CalendarIntegrationSetup() {
   async function handleConnect() {
     setFeedback(null);
     try {
-      const res = await fetch(`/api/oauth/calendar/authorize?founderId=${FOUNDER_ID}`);
+      const res = await fetch('/api/oauth/calendar/authorize');
       if (!res.ok) {
         setFeedback({ type: 'error', message: 'Failed to initiate Calendar OAuth flow' });
         return;
@@ -113,7 +121,7 @@ export default function CalendarIntegrationSetup() {
     setDisconnecting(true);
     setFeedback(null);
     try {
-      const res = await fetch(`/api/pipeline/calendar?founderId=${FOUNDER_ID}`, {
+      const res = await fetch('/api/pipeline/calendar', {
         method: 'DELETE',
       });
       if (!res.ok) {
@@ -140,14 +148,12 @@ export default function CalendarIntegrationSetup() {
     try {
       const enabledDays = days.map((d, i) => ({ ...d, dayOfWeek: i })).filter((d) => d.enabled);
 
-      // Save each enabled day as an availability window
       const results = await Promise.all(
         enabledDays.map((d) =>
           fetch('/api/pipeline/calendar', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              founderId: FOUNDER_ID,
               dayOfWeek: d.dayOfWeek,
               startTime: d.startTime,
               endTime: d.endTime,
@@ -170,128 +176,134 @@ export default function CalendarIntegrationSetup() {
     }
   }
 
-  if (loading) {
+  if (sessionLoading || loading) {
     return (
-      <div className="calendar-setup-loading" role="status" aria-live="polite">
-        Loading calendar integration...
+      <div className="space-y-4" role="status" aria-live="polite">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-24" />
+        <Skeleton className="h-48" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="calendar-setup-error" role="alert">
-        <p>{error}</p>
-        <button type="button" className="action-btn" onClick={fetchStatus}>
-          Retry
-        </button>
-      </div>
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription className="flex items-center justify-between">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={fetchStatus}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <div className="calendar-integration-setup">
-      <h2>Calendar Integration</h2>
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">Calendar Integration</h2>
 
       {/* Connection Status */}
-      <section aria-label="Calendar connection status">
-        <div className="connection-status">
-          <span
-            className={`status-indicator ${status?.connected ? 'status-connected' : 'status-disconnected'}`}
-          />
-          <span className="status-text">
-            {status?.connected ? `Connected — ${status.calendarId}` : 'Disconnected'}
-          </span>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Connection Status</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Badge variant={status?.connected ? 'default' : 'secondary'}>
+              {status?.connected ? 'Connected' : 'Disconnected'}
+            </Badge>
+            {status?.connected && status.calendarId && (
+              <span className="text-sm text-muted-foreground">{status.calendarId}</span>
+            )}
+          </div>
 
-        {!status?.connected ? (
-          <button type="button" className="action-btn" onClick={handleConnect}>
-            Connect Google Calendar
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="action-btn action-btn-danger"
-            onClick={handleDisconnect}
-            disabled={disconnecting}
-          >
-            {disconnecting ? 'Disconnecting...' : 'Disconnect'}
-          </button>
-        )}
-      </section>
+          {!status?.connected ? (
+            <Button onClick={handleConnect}>Connect Google Calendar</Button>
+          ) : (
+            <Button variant="destructive" onClick={handleDisconnect} disabled={disconnecting}>
+              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Availability Window Config (only when connected) */}
       {status?.connected && (
-        <section aria-label="Availability windows">
-          <h3>Availability Windows</h3>
-          <p className="field-hint">Configure the days and times you are available for meetings.</p>
+        <Card>
+          <CardHeader>
+            <CardTitle>Availability Windows</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Configure the days and times you are available for meetings.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <label htmlFor="cal-timezone" className="text-sm font-medium">
+                Timezone
+              </label>
+              <Input
+                id="cal-timezone"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="e.g. America/New_York"
+              />
+            </div>
 
-          <div className="form-field">
-            <label htmlFor="cal-timezone">Timezone</label>
-            <input
-              id="cal-timezone"
-              type="text"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              placeholder="e.g. America/New_York"
-            />
-          </div>
+            <div className="space-y-2" role="list" aria-label="Day-of-week availability">
+              {DAY_LABELS.map((label, i) => (
+                <div
+                  key={label}
+                  className="flex items-center gap-3 rounded-lg border p-3"
+                  role="listitem"
+                >
+                  <label className="flex items-center gap-2 min-w-[140px]">
+                    <input
+                      type="checkbox"
+                      checked={days[i].enabled}
+                      onChange={(e) => updateDay(i, { enabled: e.target.checked })}
+                      aria-label={`Enable ${label}`}
+                      className="h-4 w-4 rounded border-input"
+                    />
+                    <span className="text-sm font-medium">{label}</span>
+                  </label>
 
-          <div className="availability-grid" role="list" aria-label="Day-of-week availability">
-            {DAY_LABELS.map((label, i) => (
-              <div key={label} className="availability-row" role="listitem">
-                <label className="availability-day-toggle">
-                  <input
-                    type="checkbox"
-                    checked={days[i].enabled}
-                    onChange={(e) => updateDay(i, { enabled: e.target.checked })}
-                    aria-label={`Enable ${label}`}
-                  />
-                  <span className="availability-day-label">{label}</span>
-                </label>
-
-                {days[i].enabled && (
-                  <div className="availability-times">
-                    <label>
-                      <span className="sr-only">{label} start time</span>
-                      <input
+                  {days[i].enabled && (
+                    <div className="flex items-center gap-2">
+                      <Input
                         type="time"
                         value={days[i].startTime}
                         onChange={(e) => updateDay(i, { startTime: e.target.value })}
                         aria-label={`${label} start time`}
+                        className="w-32"
                       />
-                    </label>
-                    <span className="time-separator">–</span>
-                    <label>
-                      <span className="sr-only">{label} end time</span>
-                      <input
+                      <span className="text-sm text-muted-foreground">–</span>
+                      <Input
                         type="time"
                         value={days[i].endTime}
                         onChange={(e) => updateDay(i, { endTime: e.target.value })}
                         aria-label={`${label} end time`}
+                        className="w-32"
                       />
-                    </label>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
 
-          <button
-            type="button"
-            className="action-btn"
-            onClick={handleSaveAvailability}
-            disabled={saving}
-          >
-            {saving ? 'Saving...' : 'Save Availability'}
-          </button>
-        </section>
+            <Button onClick={handleSaveAvailability} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Availability'}
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {feedback && (
-        <div className={`form-feedback ${feedback.type}`} role="status">
-          {feedback.message}
-        </div>
+        <Alert variant={feedback.type === 'error' ? 'destructive' : 'default'} role="status">
+          <AlertTitle>{feedback.type === 'error' ? 'Error' : 'Success'}</AlertTitle>
+          <AlertDescription>{feedback.message}</AlertDescription>
+        </Alert>
       )}
     </div>
   );

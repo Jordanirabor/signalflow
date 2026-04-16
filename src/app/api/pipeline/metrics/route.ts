@@ -1,20 +1,23 @@
-import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { dbWriteError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getDailyMetrics } from '@/services/pipelineMetricsService';
 import { getPipelineStatus } from '@/services/pipelineOrchestratorService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
- * GET /api/pipeline/metrics?founderId=<uuid>
+ * GET /api/pipeline/metrics
  * Daily pipeline metrics: prospects discovered, messages sent, replies received,
  * meetings booked, reply rate.
  *
  * Requirements: 11.1, 11.2
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const founderId = session.founderId;
 
   try {
     const pipelineStatus = await getPipelineStatus(founderId);

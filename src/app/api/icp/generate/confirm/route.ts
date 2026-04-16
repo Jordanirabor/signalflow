@@ -1,4 +1,5 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { replaceICPSet } from '@/services/icpProfileService';
 import { calculateLeadScoreV2 } from '@/services/scoringService';
@@ -10,23 +11,26 @@ import { NextRequest, NextResponse } from 'next/server';
  * Accept generated ICP profiles and persist them via replaceICPSet.
  * After saving, re-score all active leads against the new ICP_Set,
  * associating each lead with the best-matching profile.
+ * founderId is derived from the server-side session.
  *
- * Body: { founderId: string, profiles: Array<profile data> }
+ * Body: { profiles: Array<profile data> }
  *
- * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 7.1, 7.2, 7.3, 7.4, 7.5
  */
 export async function POST(request: NextRequest) {
-  let body: { founderId?: string; profiles?: Partial<ICPProfile>[] };
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let body: { profiles?: Partial<ICPProfile>[] };
   try {
     body = await request.json();
   } catch {
     return validationError('Invalid JSON body');
   }
 
-  const founderId = body.founderId?.trim();
-  if (!founderId) {
-    return validationError('founderId is required', { founderId: 'missing' });
-  }
+  const founderId = session.founderId;
 
   if (!Array.isArray(body.profiles) || body.profiles.length === 0) {
     return validationError('profiles array is required and must not be empty', {

@@ -1,30 +1,23 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { discoverAndEnrichLeads } from '@/services/enrichmentService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
  * POST /api/leads/discover
  * Triggers lead discovery from public sources matching the founder's active ICP.
  * Discovers leads, creates them with scoring, enriches them, and re-scores.
  *
- * Body: { founderId: string }
- *
- * Requirements: 2.1, 2.3, 2.4, 3.1
+ * Requirements: 2.1, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4
  */
-export async function POST(request: NextRequest) {
-  let body: { founderId?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return validationError('Invalid JSON body');
-  }
-
-  if (!body.founderId || body.founderId.trim() === '') {
-    return validationError('founderId is required', { founderId: 'missing' });
+export async function POST() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const leads = await discoverAndEnrichLeads(body.founderId);
+    const leads = await discoverAndEnrichLeads(session.founderId);
     return NextResponse.json(leads, { status: 201 });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to discover leads';
