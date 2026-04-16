@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useProject } from '@/contexts/ProjectContext';
 import { useSession } from '@/hooks/useSession';
 import type { ICPProfile, ICPSet } from '@/types';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
@@ -17,6 +18,7 @@ interface ICPSetManagerProps {
 
 export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
   const { session, isLoading: sessionLoading } = useSession();
+  const { selectedProjectId } = useProject();
   const [icpSet, setIcpSet] = useState<ICPSet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +36,10 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/icp/profiles');
+      const params = new URLSearchParams();
+      if (selectedProjectId) params.set('projectId', selectedProjectId);
+      const query = params.toString();
+      const res = await fetch(`/api/icp/profiles${query ? `?${query}` : ''}`);
       if (!res.ok) {
         throw new Error('Failed to load ICP profiles');
       }
@@ -45,7 +50,7 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, selectedProjectId]);
 
   useEffect(() => {
     fetchICPSet();
@@ -124,6 +129,7 @@ export default function ICPSetManager({ onRegenerate }: ICPSetManagerProps) {
           industry: newIndustry.trim(),
           painPoints: filteredPainPoints,
           buyingSignals: [],
+          projectId: selectedProjectId,
         }),
       });
 

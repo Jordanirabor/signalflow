@@ -11,6 +11,7 @@ import type {
   CallNote,
   CorrelationBreakdown,
   CRMStatus,
+  ICPProject,
   Lead,
   OutreachRecord,
   ResearchProfile,
@@ -40,6 +41,7 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
     flag: string | null;
   } | null>(null);
   const [refreshingResearch, setRefreshingResearch] = useState(false);
+  const [project, setProject] = useState<ICPProject | null>(null);
 
   const fetchLead = useCallback(async () => {
     try {
@@ -103,6 +105,18 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
       fetchCorrelation(),
     ]).finally(() => setLoading(false));
   }, [fetchLead, fetchOutreach, fetchCallNotes, fetchResearchProfile, fetchCorrelation]);
+
+  // Fetch associated project when lead is loaded
+  useEffect(() => {
+    if (!lead?.projectId) {
+      setProject(null);
+      return;
+    }
+    fetch(`/api/projects/${lead.projectId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setProject(data))
+      .catch(() => setProject(null));
+  }, [lead?.projectId]);
 
   async function handleStatusChange() {
     if (!newStatus || !lead) return;
@@ -318,6 +332,12 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
               {lead.enrichmentData.failedSources.map(formatSource).join(', ')})
             </span>
           )}
+        {project && (
+          <Badge variant="outline">
+            {project.name}
+            {project.isDeleted ? ' (archived)' : ''}
+          </Badge>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -341,6 +361,15 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                   <>
                     <dt className="font-medium text-muted-foreground">Email</dt>
                     <dd>{lead.email}</dd>
+                  </>
+                )}
+                {project && (
+                  <>
+                    <dt className="font-medium text-muted-foreground">Project</dt>
+                    <dd>
+                      {project.name}
+                      {project.isDeleted ? ' (archived)' : ''}
+                    </dd>
                   </>
                 )}
               </dl>

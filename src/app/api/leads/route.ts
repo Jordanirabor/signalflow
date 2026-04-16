@@ -93,10 +93,10 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * GET /api/leads?minScore=<number>&sortBy=<score|created>
+ * GET /api/leads?minScore=<number>&sortBy=<score|created>&projectId=<uuid>
  * List leads with optional filters. Default sort: leadScore DESC.
  *
- * Requirements: 2.2, 3.1, 3.2, 3.3, 3.4
+ * Requirements: 2.2, 3.1, 3.2, 3.3, 3.4, 7.2
  */
 export async function GET(request: NextRequest) {
   const session = await getSession();
@@ -106,6 +106,7 @@ export async function GET(request: NextRequest) {
 
   const minScoreParam = request.nextUrl.searchParams.get('minScore');
   const sortBy = request.nextUrl.searchParams.get('sortBy') as 'score' | 'created' | null;
+  const projectId = request.nextUrl.searchParams.get('projectId') || undefined;
 
   let minScore: number | undefined;
   if (minScoreParam !== null) {
@@ -120,6 +121,7 @@ export async function GET(request: NextRequest) {
       founderId: session.founderId,
       minScore,
       sortBy: sortBy ?? undefined,
+      projectId,
     });
     return NextResponse.json(leads);
   } catch {

@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useProject } from '@/contexts/ProjectContext';
 import { useSession } from '@/hooks/useSession';
 import type { PipelineMetrics, PipelineStatus } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -13,6 +14,7 @@ const POLL_INTERVAL_MS = 5000;
 
 export default function PipelineDashboard() {
   const { session, isLoading: sessionLoading } = useSession();
+  const { selectedProjectId } = useProject();
   const [metrics, setMetrics] = useState<PipelineMetrics | null>(null);
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -162,7 +164,7 @@ export default function PipelineDashboard() {
       fetch('/api/pipeline/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ projectId: selectedProjectId }),
       }).catch(() => {
         // Errors will be picked up by polling
       });
@@ -173,7 +175,7 @@ export default function PipelineDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, [fetchData]);
+  }, [fetchData, selectedProjectId]);
 
   function formatTimestamp(date?: Date | string): string {
     if (!date) return '—';
@@ -366,7 +368,9 @@ export default function PipelineDashboard() {
             <Button
               variant="secondary"
               onClick={handleManualRun}
-              disabled={actionLoading !== null || hasActiveRun || hasICP === false}
+              disabled={
+                actionLoading !== null || hasActiveRun || hasICP === false || !selectedProjectId
+              }
             >
               {hasActiveRun
                 ? 'Pipeline Running...'

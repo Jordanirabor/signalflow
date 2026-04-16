@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import { useProject } from '@/contexts/ProjectContext';
 import { useSession } from '@/hooks/useSession';
 import { useState } from 'react';
 
@@ -37,6 +38,7 @@ interface ICPFormProps {
 
 export default function ICPForm({ onConfirm }: ICPFormProps) {
   const { session, isLoading: sessionLoading } = useSession();
+  const { selectedProjectId, selectedProject } = useProject();
   const [productDescription, setProductDescription] = useState('');
   const [generating, setGenerating] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -64,6 +66,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           productDescription: productDescription.trim(),
+          projectId: selectedProjectId,
         }),
       });
 
@@ -100,6 +103,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         body: JSON.stringify({
           profiles: generatedProfiles,
           productDescription: productDescription.trim(),
+          projectId: selectedProjectId,
         }),
       });
 
@@ -147,7 +151,9 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
       {/* AI Generation Section */}
       <Card>
         <CardHeader>
-          <CardTitle>Generate ICP from Your Product</CardTitle>
+          <CardTitle>
+            Generate ICP from Your Product{selectedProject ? ` — ${selectedProject.name}` : ''}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">

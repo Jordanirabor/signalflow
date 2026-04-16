@@ -32,6 +32,7 @@ import type {
 interface PipelineRunRow {
   id: string;
   founder_id: string;
+  project_id: string | null;
   status: 'running' | 'completed' | 'failed' | 'partial';
   stages_completed: string[];
   stage_errors: Record<string, string>;
@@ -43,7 +44,7 @@ interface PipelineRunRow {
   completed_at: Date | null;
 }
 
-const PIPELINE_RUN_COLUMNS = `id, founder_id, status, stages_completed, stage_errors,
+const PIPELINE_RUN_COLUMNS = `id, founder_id, project_id, status, stages_completed, stage_errors,
   prospects_discovered, messages_sent, replies_processed, meetings_booked,
   started_at, completed_at`;
 
@@ -51,6 +52,7 @@ function mapRunRow(row: PipelineRunRow): PipelineRun {
   return {
     id: row.id,
     founderId: row.founder_id,
+    projectId: row.project_id ?? undefined,
     status: row.status,
     stagesCompleted: row.stages_completed,
     stageErrors: row.stage_errors,
@@ -86,25 +88,26 @@ export interface StageResult {
  *
  * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6
  */
-async function executeDiscoveryStage(founderId: string): Promise<StageResult> {
+async function executeDiscoveryStage(founderId: string, projectId: string): Promise<StageResult> {
   const config = await getPipelineConfig(founderId);
 
-  // Fetch all active ICP profiles instead of single ICP
-  const activeProfiles = await getActiveProfiles(founderId);
+  // Fetch only active ICP profiles for the specified project
+  const activeProfiles = await getActiveProfiles(founderId, projectId);
   if (activeProfiles.length === 0) {
     console.warn(
-      '[PipelineOrchestrator] No active ICP profiles for founder. Skipping discovery stage.',
+      '[PipelineOrchestrator] No active ICP profiles for founder/project. Skipping discovery stage.',
     );
     return { prospectsDiscovered: 0 };
   }
 
-  // Check how many prospects were already discovered today (daily cap enforcement)
+  // Check how many prospects were already discovered today for this project (daily cap enforcement)
   const todayCountResult = await query<{ count: string }>(
     `SELECT COUNT(*) AS count FROM lead
      WHERE founder_id = $1
+       AND project_id = $2
        AND discovered_at >= CURRENT_DATE
        AND discovered_at < CURRENT_DATE + INTERVAL '1 day'`,
-    [founderId],
+    [founderId, projectId],
   );
   const discoveredToday = parseInt(todayCountResult.rows[0].count, 10);
   const remaining = Math.max(0, config.dailyDiscoveryCap - discoveredToday);
@@ -155,7 +158,7 @@ async function executeDiscoveryStage(founderId: string): Promise<StageResult> {
       icpProfile: originatingProfile,
     });
 
-    // Create the lead with icp_profile_id
+    // Create the lead with icp_profile_id and project_id
     let lead;
     try {
       lead = await createLead(
@@ -167,6 +170,7 @@ async function executeDiscoveryStage(founderId: string): Promise<StageResult> {
           industry: prospect.industry,
           geography: prospect.geography,
           icpProfileId: prospect.icpProfileId,
+          projectId,
         },
         scoreResult.totalScore,
         scoreResult.breakdown,
@@ -862,11 +866,14 @@ export async function getLastError(founderId?: string): Promise<string | undefin
 const STAGES = ['discovery', 'outreach', 'follow_up', 'inbox', 'booking'] as const;
 type StageName = (typeof STAGES)[number];
 
-const STAGE_EXECUTORS: Record<StageName, (founderId: string) => Promise<StageResult>> = {
+const STAGE_EXECUTORS: Record<
+  StageName,
+  (founderId: string, projectId: string) => Promise<StageResult>
+> = {
   discovery: executeDiscoveryStage,
-  outreach: executeOutreachStage,
-  follow_up: executeFollowUpStage,
-  inbox: executeInboxStage,
+  outreach: (founderId) => executeOutreachStage(founderId),
+  follow_up: (founderId) => executeFollowUpStage(founderId),
+  inbox: (founderId) => executeInboxStage(founderId),
   booking: executeBookingStage,
 };
 
@@ -881,13 +888,16 @@ const STAGE_EXECUTORS: Record<StageName, (founderId: string) => Promise<StageRes
  *
  * Requirements: 1.2, 1.3, 1.4
  */
-export async function executePipelineRun(founderId: string): Promise<PipelineRun> {
-  // Create pipeline_run record
+export async function executePipelineRun(
+  founderId: string,
+  projectId: string,
+): Promise<PipelineRun> {
+  // Create pipeline_run record with project_id
   const insertResult = await query<PipelineRunRow>(
-    `INSERT INTO pipeline_run (founder_id, status, started_at)
-     VALUES ($1, 'running', NOW())
+    `INSERT INTO pipeline_run (founder_id, project_id, status, started_at)
+     VALUES ($1, $2, 'running', NOW())
      RETURNING ${PIPELINE_RUN_COLUMNS}`,
-    [founderId],
+    [founderId, projectId],
   );
   const runId = insertResult.rows[0].id;
 
@@ -900,7 +910,7 @@ export async function executePipelineRun(founderId: string): Promise<PipelineRun
 
   for (const stage of STAGES) {
     try {
-      const result = await STAGE_EXECUTORS[stage](founderId);
+      const result = await STAGE_EXECUTORS[stage](founderId, projectId);
       stagesCompleted.push(stage);
       prospectsDiscovered += result.prospectsDiscovered ?? 0;
       messagesSent += result.messagesSent ?? 0;

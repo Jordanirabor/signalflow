@@ -26,6 +26,7 @@ interface LeadRow {
   correlation_score: number | null;
   correlation_flag: string | null;
   icp_profile_id: string | null;
+  project_id: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ export interface CreateLeadInput {
   industry?: string;
   geography?: string;
   icpProfileId?: string;
+  projectId?: string;
 }
 
 export interface UpdateLeadInput {
@@ -54,6 +56,7 @@ export interface ListLeadsOptions {
   founderId: string;
   minScore?: number;
   sortBy?: 'score' | 'created';
+  projectId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,13 +85,14 @@ function mapRow(row: LeadRow): Lead {
     correlationScore: row.correlation_score ?? undefined,
     correlationFlag: row.correlation_flag ?? undefined,
     icpProfileId: row.icp_profile_id ?? undefined,
+    projectId: row.project_id ?? undefined,
   };
 }
 
 const LEAD_COLUMNS = `id, founder_id, name, role, company, industry, geography, email,
   lead_score, score_breakdown, enrichment_status, enrichment_data,
   crm_status, is_deleted, deleted_at, created_at, updated_at,
-  correlation_score, correlation_flag, icp_profile_id`;
+  correlation_score, correlation_flag, icp_profile_id, project_id`;
 
 // ---------------------------------------------------------------------------
 // CRUD operations
@@ -104,8 +108,8 @@ export async function createLead(
   scoreBreakdown: ScoreBreakdown,
 ): Promise<Lead> {
   const result = await query<LeadRow>(
-    `INSERT INTO lead (founder_id, name, role, company, industry, geography, lead_score, score_breakdown, icp_profile_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO lead (founder_id, name, role, company, industry, geography, lead_score, score_breakdown, icp_profile_id, project_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING ${LEAD_COLUMNS}`,
     [
       input.founderId,
@@ -117,6 +121,7 @@ export async function createLead(
       score,
       JSON.stringify(scoreBreakdown),
       input.icpProfileId ?? null,
+      input.projectId ?? null,
     ],
   );
   return mapRow(result.rows[0]);
@@ -165,6 +170,12 @@ export async function listLeads(options: ListLeadsOptions): Promise<Lead[]> {
   if (options.minScore !== undefined) {
     conditions.push(`lead_score >= $${paramIdx}`);
     params.push(options.minScore);
+    paramIdx++;
+  }
+
+  if (options.projectId !== undefined) {
+    conditions.push(`project_id = $${paramIdx}`);
+    params.push(options.projectId);
     paramIdx++;
   }
 
@@ -321,6 +332,23 @@ export async function updateLeadEnrichment(
     ],
   );
 
+  if (result.rows.length === 0) return null;
+  return mapRow(result.rows[0]);
+}
+
+/**
+ * Reassign a lead to a different ICP project.
+ */
+export async function reassignLeadProject(
+  leadId: string,
+  targetProjectId: string,
+): Promise<Lead | null> {
+  const result = await query<LeadRow>(
+    `UPDATE lead SET project_id = $1, updated_at = NOW()
+     WHERE id = $2 AND is_deleted = false
+     RETURNING ${LEAD_COLUMNS}`,
+    [targetProjectId, leadId],
+  );
   if (result.rows.length === 0) return null;
   return mapRow(result.rows[0]);
 }

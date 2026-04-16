@@ -1,3 +1,4 @@
+import { getActiveProjects } from '@/services/icpProjectService';
 import { getPipelineConfig } from '@/services/pipelineConfigService';
 import {
   computeNextRunTime,
@@ -64,9 +65,12 @@ export function startScheduler(): void {
         if (now < nextRun) return; // Not time yet
       }
 
-      // Execute the pipeline run
+      // Execute the pipeline run for each active project
       isRunning = true;
-      await executePipelineRun(FOUNDER_ID);
+      const activeProjects = await getActiveProjects(FOUNDER_ID);
+      for (const project of activeProjects) {
+        await executePipelineRun(FOUNDER_ID, project.id);
+      }
     } catch (err) {
       console.error('[PipelineScheduler] Error during scheduled run:', err);
     } finally {

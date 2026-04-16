@@ -22,6 +22,7 @@ export interface GenerateMessageInput {
   messageType: MessageType;
   tone: TonePreference;
   productContext: string;
+  projectName?: string;
 }
 
 export interface EnhancedGenerateMessageInput extends GenerateMessageInput {
@@ -112,8 +113,16 @@ export function enforceWordLimit(text: string, messageType: MessageType): string
 // ---------------------------------------------------------------------------
 
 export function buildPrompt(input: GenerateMessageInput): string {
-  const { leadName, leadRole, leadCompany, enrichmentData, messageType, tone, productContext } =
-    input;
+  const {
+    leadName,
+    leadRole,
+    leadCompany,
+    enrichmentData,
+    messageType,
+    tone,
+    productContext,
+    projectName,
+  } = input;
 
   const typeLabel = messageType === 'cold_dm' ? 'cold DM' : 'cold email';
   const wordLimit = getWordLimit(messageType);
@@ -127,12 +136,14 @@ export function buildPrompt(input: GenerateMessageInput): string {
       'No enrichment data is available. Write a generic but relevant message based on the lead role and company.';
   }
 
+  const projectSection = projectName ? `Project: ${projectName}\n\n` : '';
+
   return `Write a ${typeLabel} to ${leadName}, who is a ${leadRole} at ${leadCompany}.
 
 Tone: ${tone}
 Word limit: ${wordLimit} words maximum
 
-Product context: ${productContext}
+${projectSection}Product context: ${productContext}
 
 ${personalizationSection}
 
@@ -409,11 +420,15 @@ export function buildEnhancedPrompt(input: EnhancedGenerateMessageInput): string
     ? "Your hook MUST reference a specific detail (a quote, opinion, or key point) from the prospect's published content above. Don't just mention it — show you actually read it."
     : "Your hook MUST reference a specific piece of the prospect's recent content or activity. Show you paid attention.";
 
+  // --- Project name ---
+  const projectSection = input.projectName ? `Project: ${input.projectName}` : '';
+
   // --- Assemble prompt ---
   const sections = [
     `Write a ${typeLabel} to ${leadName}, who is a ${leadRole} at ${leadCompany}.`,
     `Tone: ${tone}`,
     `Word limit: ${wordLimit} words maximum`,
+    projectSection,
     `Product context: ${productContext}`,
     productDesc,
     valueSection,

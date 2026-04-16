@@ -1,6 +1,7 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
 import { getSession } from '@/lib/auth';
 import { researchAndGenerate } from '@/services/autoResearchOrchestrator';
+import { getProjectById } from '@/services/icpProjectService';
 import { getEnrichedICP } from '@/services/icpService';
 import { getLeadById } from '@/services/leadService';
 import {
@@ -9,6 +10,7 @@ import {
   type GenerateMessageInput,
 } from '@/services/messageService';
 import { buildPersonalizationContext } from '@/services/personalizationContextBuilder';
+import { getPipelineConfig } from '@/services/pipelineConfigService';
 import { getResearchProfile } from '@/services/prospectResearcherService';
 import type { ApiError, EnrichedICP, MessageRequest, ResearchProfile } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
@@ -50,13 +52,6 @@ export async function POST(request: NextRequest) {
       tone: 'invalid',
     });
   }
-  if (
-    !body.productContext ||
-    typeof body.productContext !== 'string' ||
-    body.productContext.trim() === ''
-  ) {
-    return validationError('productContext is required', { productContext: 'missing' });
-  }
 
   // Fetch the lead
   let lead;
@@ -68,6 +63,32 @@ export async function POST(request: NextRequest) {
 
   if (!lead) {
     return validationError('Lead not found', { leadId: 'not_found' });
+  }
+
+  // Resolve productContext: body > lead's project description > pipeline_config fallback
+  let productContext = body.productContext?.trim() || '';
+  if (!productContext && lead.projectId) {
+    try {
+      const project = await getProjectById(lead.projectId);
+      if (project?.productDescription) {
+        productContext = project.productDescription;
+      }
+    } catch {
+      // Fall through to pipeline_config fallback
+    }
+  }
+  if (!productContext) {
+    try {
+      const config = await getPipelineConfig(session.founderId);
+      if (config.productContext) {
+        productContext = config.productContext;
+      }
+    } catch {
+      // No fallback available
+    }
+  }
+  if (!productContext) {
+    return validationError('productContext is required', { productContext: 'missing' });
   }
 
   // --- Attempt enriched personalization path ---
@@ -116,7 +137,7 @@ export async function POST(request: NextRequest) {
           enrichmentData: lead.enrichmentData,
           messageType: body.messageType,
           tone: body.tone,
-          productContext: body.productContext.trim(),
+          productContext,
           personalizationContext,
         });
 
@@ -144,7 +165,7 @@ export async function POST(request: NextRequest) {
     enrichmentData: lead.enrichmentData,
     messageType: body.messageType,
     tone: body.tone,
-    productContext: body.productContext.trim(),
+    productContext,
   };
 
   try {

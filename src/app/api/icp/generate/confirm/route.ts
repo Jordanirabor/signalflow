@@ -2,6 +2,7 @@ import { dbWriteError, validationError } from '@/lib/apiErrors';
 import { getSession } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { replaceICPSet } from '@/services/icpProfileService';
+import { getProjectById, updateProject } from '@/services/icpProjectService';
 import { calculateLeadScoreV2 } from '@/services/scoringService';
 import type { EnrichmentData, ICPProfile, ScoreBreakdownV2 } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { profiles?: Partial<ICPProfile>[]; productDescription?: string };
+  let body: { profiles?: Partial<ICPProfile>[]; productDescription?: string; projectId?: string };
   try {
     body = await request.json();
   } catch {
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest) {
   }
 
   const founderId = session.founderId;
+  const projectId = body.projectId?.trim() || undefined;
 
   if (!Array.isArray(body.profiles) || body.profiles.length === 0) {
     return validationError('profiles array is required and must not be empty', {
@@ -38,7 +40,19 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Save product description to pipeline config if provided
+  // Store product description on the project if projectId is provided
+  if (projectId && body.productDescription?.trim()) {
+    try {
+      const project = await getProjectById(projectId);
+      if (project && project.founderId === founderId) {
+        await updateProject(projectId, { productDescription: body.productDescription.trim() });
+      }
+    } catch {
+      // Non-critical — continue with ICP save
+    }
+  }
+
+  // Save product description to pipeline config if provided (legacy fallback)
   if (body.productDescription?.trim()) {
     try {
       await query(
@@ -56,12 +70,13 @@ export async function POST(request: NextRequest) {
   const profileInputs = body.profiles.map((p) => ({
     ...p,
     founderId,
+    projectId,
     isActive: p.isActive ?? true,
   })) as Parameters<typeof replaceICPSet>[1];
 
   try {
-    // Req 7.2: Replace existing ICP_Set with the new one
-    const savedSet = await replaceICPSet(founderId, profileInputs);
+    // Req 7.2: Replace existing ICP_Set with the new one, scoped to project
+    const savedSet = await replaceICPSet(founderId, profileInputs, projectId);
 
     // Req 7.5: Re-score all active leads against the new ICP_Set
     await rescoreLeads(founderId, savedSet.profiles);

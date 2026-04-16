@@ -122,6 +122,7 @@ function mapRow(row: ICPProfileRow): ICPProfile {
   return {
     id: row.id,
     founderId: row.founder_id,
+    projectId: row.project_id ?? undefined,
     targetRole: row.target_role,
     industry: row.industry,
     companyStage: row.company_stage ?? undefined,
@@ -141,15 +142,24 @@ function mapRow(row: ICPProfileRow): ICPProfile {
 
 /**
  * Return all ICP profiles for a founder, ordered by created_at ASC.
+ * Optionally filter by projectId.
  */
-export async function getICPSet(founderId: string): Promise<ICPSet> {
+export async function getICPSet(founderId: string, projectId?: string): Promise<ICPSet> {
+  const params: unknown[] = [founderId];
+  let whereClause = 'WHERE founder_id = $1';
+
+  if (projectId) {
+    params.push(projectId);
+    whereClause += ` AND project_id = $${params.length}`;
+  }
+
   const result = await query<ICPProfileRow>(
-    `SELECT id, founder_id, target_role, industry, company_stage, geography,
+    `SELECT id, founder_id, project_id, target_role, industry, company_stage, geography,
             pain_points, buying_signals, custom_tags, is_active, created_at, updated_at
      FROM icp_profile
-     WHERE founder_id = $1
+     ${whereClause}
      ORDER BY created_at ASC`,
-    [founderId],
+    params,
   );
 
   const profiles = result.rows.map(mapRow);
@@ -162,15 +172,27 @@ export async function getICPSet(founderId: string): Promise<ICPSet> {
 
 /**
  * Return only active (isActive = true) profiles for a founder.
+ * Optionally filter by projectId.
  */
-export async function getActiveProfiles(founderId: string): Promise<ICPProfile[]> {
+export async function getActiveProfiles(
+  founderId: string,
+  projectId?: string,
+): Promise<ICPProfile[]> {
+  const params: unknown[] = [founderId];
+  let whereClause = 'WHERE founder_id = $1 AND is_active = true';
+
+  if (projectId) {
+    params.push(projectId);
+    whereClause += ` AND project_id = $${params.length}`;
+  }
+
   const result = await query<ICPProfileRow>(
-    `SELECT id, founder_id, target_role, industry, company_stage, geography,
+    `SELECT id, founder_id, project_id, target_role, industry, company_stage, geography,
             pain_points, buying_signals, custom_tags, is_active, created_at, updated_at
      FROM icp_profile
-     WHERE founder_id = $1 AND is_active = true
+     ${whereClause}
      ORDER BY created_at ASC`,
-    [founderId],
+    params,
   );
 
   return result.rows.map(mapRow);
@@ -181,7 +203,7 @@ export async function getActiveProfiles(founderId: string): Promise<ICPProfile[]
  */
 export async function getICPProfileById(id: string): Promise<ICPProfile | null> {
   const result = await query<ICPProfileRow>(
-    `SELECT id, founder_id, target_role, industry, company_stage, geography,
+    `SELECT id, founder_id, project_id, target_role, industry, company_stage, geography,
             pain_points, buying_signals, custom_tags, is_active, created_at, updated_at
      FROM icp_profile
      WHERE id = $1`,
@@ -208,13 +230,14 @@ export async function createICPProfile(
 
   const result = await query<ICPProfileRow>(
     `INSERT INTO icp_profile
-       (founder_id, target_role, industry, company_stage, geography,
+       (founder_id, project_id, target_role, industry, company_stage, geography,
         pain_points, buying_signals, custom_tags, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, founder_id, target_role, industry, company_stage, geography,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING id, founder_id, project_id, target_role, industry, company_stage, geography,
                pain_points, buying_signals, custom_tags, is_active, created_at, updated_at`,
     [
       input.founderId,
+      input.projectId ?? null,
       input.targetRole,
       input.industry,
       input.companyStage ?? null,
@@ -256,7 +279,7 @@ export async function updateICPProfile(
          pain_points = $5, buying_signals = $6, custom_tags = $7, is_active = $8,
          updated_at = NOW()
      WHERE id = $9
-     RETURNING id, founder_id, target_role, industry, company_stage, geography,
+     RETURNING id, founder_id, project_id, target_role, industry, company_stage, geography,
                pain_points, buying_signals, custom_tags, is_active, created_at, updated_at`,
     [
       merged.targetRole,
@@ -291,7 +314,7 @@ export async function setProfileActive(id: string, isActive: boolean): Promise<I
     `UPDATE icp_profile
      SET is_active = $1, updated_at = NOW()
      WHERE id = $2
-     RETURNING id, founder_id, target_role, industry, company_stage, geography,
+     RETURNING id, founder_id, project_id, target_role, industry, company_stage, geography,
                pain_points, buying_signals, custom_tags, is_active, created_at, updated_at`,
     [isActive, id],
   );
@@ -301,19 +324,28 @@ export async function setProfileActive(id: string, isActive: boolean): Promise<I
 }
 
 /**
- * Replace the entire ICP set for a founder within a transaction.
- * Deletes all existing profiles and inserts the new set.
+ * Replace the ICP set for a founder within a transaction.
+ * When projectId is provided, scopes deletion and insertion to that project only.
+ * When projectId is omitted, deletes all profiles for the founder (legacy behavior).
  */
 export async function replaceICPSet(
   founderId: string,
   profiles: Omit<ICPProfile, 'id' | 'createdAt' | 'updatedAt'>[],
+  projectId?: string,
 ): Promise<ICPSet> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Delete existing profiles for this founder
-    await client.query('DELETE FROM icp_profile WHERE founder_id = $1', [founderId]);
+    // Delete existing profiles scoped to project or all founder profiles
+    if (projectId) {
+      await client.query('DELETE FROM icp_profile WHERE founder_id = $1 AND project_id = $2', [
+        founderId,
+        projectId,
+      ]);
+    } else {
+      await client.query('DELETE FROM icp_profile WHERE founder_id = $1', [founderId]);
+    }
 
     // Insert new profiles
     const inserted: ICPProfile[] = [];
@@ -324,16 +356,18 @@ export async function replaceICPSet(
       }
 
       const isActive = profile.isActive ?? true;
+      const effectiveProjectId = profile.projectId ?? projectId ?? null;
 
       const result = await client.query<ICPProfileRow>(
         `INSERT INTO icp_profile
-           (founder_id, target_role, industry, company_stage, geography,
+           (founder_id, project_id, target_role, industry, company_stage, geography,
             pain_points, buying_signals, custom_tags, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, founder_id, target_role, industry, company_stage, geography,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, founder_id, project_id, target_role, industry, company_stage, geography,
                    pain_points, buying_signals, custom_tags, is_active, created_at, updated_at`,
         [
           founderId,
+          effectiveProjectId,
           profile.targetRole,
           profile.industry,
           profile.companyStage ?? null,
@@ -361,4 +395,24 @@ export async function replaceICPSet(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Move an ICP profile to a different project by updating its project_id.
+ */
+export async function moveProfileToProject(
+  profileId: string,
+  targetProjectId: string,
+): Promise<ICPProfile | null> {
+  const result = await query<ICPProfileRow>(
+    `UPDATE icp_profile
+     SET project_id = $1, updated_at = NOW()
+     WHERE id = $2
+     RETURNING id, founder_id, project_id, target_role, industry, company_stage, geography,
+               pain_points, buying_signals, custom_tags, is_active, created_at, updated_at`,
+    [targetProjectId, profileId],
+  );
+
+  if (result.rows.length === 0) return null;
+  return mapRow(result.rows[0]);
 }

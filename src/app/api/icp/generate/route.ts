@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { productDescription?: string };
+  let body: { productDescription?: string; projectId?: string };
   try {
     body = await request.json();
   } catch {
@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
   }
 
   const founderId = session.founderId;
+  const projectId = body.projectId?.trim() || undefined;
 
   try {
     const result = await generateICPSet(desc, founderId);
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
     const message = err instanceof Error ? err.message : 'Failed to generate ICP set';
 
     try {
-      const existingSet = await getICPSet(founderId);
+      const existingSet = await getICPSet(founderId, projectId);
       if (existingSet && existingSet.profiles.length > 0) {
         return NextResponse.json(
           {

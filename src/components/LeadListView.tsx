@@ -35,7 +35,13 @@ interface NewLeadForm {
 
 const emptyForm: NewLeadForm = { name: '', role: '', company: '', industry: '', geography: '' };
 
-export default function LeadListView({ onSelectLead }: { onSelectLead?: (id: string) => void }) {
+export default function LeadListView({
+  onSelectLead,
+  projectId,
+}: {
+  onSelectLead?: (id: string) => void;
+  projectId?: string | null;
+}) {
   const { session, isLoading: sessionLoading } = useSession();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +61,7 @@ export default function LeadListView({ onSelectLead }: { onSelectLead?: (id: str
     try {
       const params = new URLSearchParams();
       if (minScore.trim()) params.set('minScore', minScore.trim());
+      if (projectId) params.set('projectId', projectId);
       const query = params.toString();
       const res = await fetch(`/api/leads${query ? `?${query}` : ''}`);
       if (!res.ok) {
@@ -69,7 +76,7 @@ export default function LeadListView({ onSelectLead }: { onSelectLead?: (id: str
     } finally {
       setLoading(false);
     }
-  }, [session, minScore]);
+  }, [session, minScore, projectId]);
 
   useEffect(() => {
     fetchLeads();
