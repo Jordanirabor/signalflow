@@ -3,17 +3,9 @@
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSession } from '@/hooks/useSession';
 import type { CRMStatus } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
@@ -35,28 +27,20 @@ interface PipelineView {
 
 const CRM_STATUSES: CRMStatus[] = ['New', 'Contacted', 'Replied', 'Booked', 'Closed'];
 
-function statusBadgeVariant(
-  status: CRMStatus,
-): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'Booked':
-    case 'Closed':
-      return 'default';
-    case 'Replied':
-      return 'secondary';
-    case 'Contacted':
-      return 'outline';
-    default:
-      return 'outline';
-  }
-}
+const STATUS_COLORS: Record<CRMStatus, string> = {
+  New: 'border-l-blue-400',
+  Contacted: 'border-l-amber-400',
+  Replied: 'border-l-emerald-400',
+  Booked: 'border-l-violet-400',
+  Closed: 'border-l-zinc-400',
+};
 
 export default function CRMPipelineView() {
   const { session, isLoading: sessionLoading } = useSession();
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('all');
+  const [movingLeadId, setMovingLeadId] = useState<string | null>(null);
 
   const fetchPipeline = useCallback(async () => {
     if (!session) return;
@@ -82,16 +66,52 @@ export default function CRMPipelineView() {
     fetchPipeline();
   }, [fetchPipeline]);
 
+  async function moveToStatus(leadId: string, toStatus: CRMStatus) {
+    setMovingLeadId(leadId);
+    try {
+      const res = await fetch(`/api/crm/${leadId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toStatus }),
+      });
+      if (res.ok) {
+        // Optimistic update
+        setPipeline((prev) => {
+          if (!prev) return prev;
+          const lead = prev.leads.find((l) => l.id === leadId);
+          if (!lead) return prev;
+          const oldStatus = lead.crmStatus;
+          const newCounts = { ...prev.counts };
+          newCounts[oldStatus] = Math.max(0, (newCounts[oldStatus] ?? 0) - 1);
+          newCounts[toStatus] = (newCounts[toStatus] ?? 0) + 1;
+          return {
+            counts: newCounts,
+            leads: prev.leads.map((l) =>
+              l.id === leadId ? { ...l, crmStatus: toStatus, updatedAt: new Date() } : l,
+            ),
+          };
+        });
+      }
+    } catch {
+      /* silent */
+    } finally {
+      setMovingLeadId(null);
+    }
+  }
+
   if (sessionLoading || loading) {
     return (
       <div className="space-y-4" role="status" aria-live="polite">
         <Skeleton className="h-8 w-48" />
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-5 gap-4">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-20" />
+            <div key={i} className="space-y-3">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-24" />
+              <Skeleton className="h-24" />
+            </div>
           ))}
         </div>
-        <Skeleton className="h-64" />
       </div>
     );
   }
@@ -112,9 +132,6 @@ export default function CRMPipelineView() {
 
   if (!pipeline) return null;
 
-  const filteredLeads =
-    activeTab === 'all' ? pipeline.leads : pipeline.leads.filter((l) => l.crmStatus === activeTab);
-
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold tracking-tight">CRM Pipeline</h2>
@@ -125,88 +142,65 @@ export default function CRMPipelineView() {
         </Alert>
       )}
 
-      {/* Status Counts */}
-      <section
-        className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5"
-        aria-label="Pipeline status counts"
-      >
-        {CRM_STATUSES.map((status) => (
-          <Card key={status}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">{status}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">{pipeline.counts[status] ?? 0}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </section>
+      {/* Kanban Board */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:grid-cols-5">
+        {CRM_STATUSES.map((status) => {
+          const leads = pipeline.leads.filter((l) => l.crmStatus === status);
+          const nextStatus = CRM_STATUSES[CRM_STATUSES.indexOf(status) + 1] as
+            | CRMStatus
+            | undefined;
 
-      {/* Leads Table with Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          {CRM_STATUSES.map((status) => (
-            <TabsTrigger key={status} value={status}>
-              {status}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+          return (
+            <div key={status} className="flex flex-col">
+              {/* Column header */}
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">{status}</h3>
+                <Badge variant="secondary" className="text-xs">
+                  {pipeline.counts[status] ?? 0}
+                </Badge>
+              </div>
+              <Separator className="mb-3" />
 
-        <TabsContent value={activeTab} className="mt-4">
-          {filteredLeads.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                <p className="text-muted-foreground">
-                  {activeTab === 'all'
-                    ? 'No leads in the pipeline yet. Discover your first leads to get started.'
-                    : `No leads with status "${activeTab}".`}
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Company</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Score</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Last Activity</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredLeads.map((lead) => (
-                      <TableRow key={lead.id}>
-                        <TableCell className="font-medium">{lead.name}</TableCell>
-                        <TableCell>{lead.company}</TableCell>
-                        <TableCell className="text-muted-foreground">{lead.role}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{lead.leadScore}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={statusBadgeVariant(lead.crmStatus)}>
-                            {lead.crmStatus}
+              {/* Cards */}
+              <div className="flex flex-1 flex-col gap-2">
+                {leads.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                    No leads
+                  </div>
+                ) : (
+                  leads.map((lead) => (
+                    <Card key={lead.id} className={`border-l-4 ${STATUS_COLORS[status]}`}>
+                      <CardContent className="p-3">
+                        <div className="font-medium text-sm">{lead.name}</div>
+                        {lead.company && (
+                          <div className="text-xs text-muted-foreground">{lead.company}</div>
+                        )}
+                        <div className="text-xs text-muted-foreground">{lead.role}</div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <Badge variant="outline" className="text-xs">
+                            {lead.leadScore}
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {new Date(lead.updatedAt).toLocaleDateString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                          })}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-      </Tabs>
+                          {nextStatus && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              disabled={movingLeadId === lead.id}
+                              onClick={() => moveToStatus(lead.id, nextStatus)}
+                            >
+                              {movingLeadId === lead.id ? '...' : `→ ${nextStatus}`}
+                            </Button>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
