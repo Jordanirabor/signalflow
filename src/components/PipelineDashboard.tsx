@@ -21,6 +21,7 @@ export default function PipelineDashboard() {
   const [notification, setNotification] = useState<{ message: string; resolution?: string } | null>(
     null,
   );
+  const [hasICP, setHasICP] = useState<boolean | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(
@@ -29,9 +30,10 @@ export default function PipelineDashboard() {
       if (!isPolling) setLoading(true);
       setError(null);
       try {
-        const [metricsRes, statusRes] = await Promise.all([
+        const [metricsRes, statusRes, icpRes] = await Promise.all([
           fetch('/api/pipeline/metrics'),
           fetch('/api/pipeline/status'),
+          !isPolling ? fetch('/api/icp/profiles') : Promise.resolve(null),
         ]);
 
         if (!metricsRes.ok) {
@@ -43,6 +45,17 @@ export default function PipelineDashboard() {
           const err = await statusRes.json();
           setError(err.message ?? 'Failed to load pipeline status');
           return;
+        }
+
+        // Check if ICP profiles exist
+        if (icpRes && icpRes.ok) {
+          const icpData = await icpRes.json();
+          const profiles = icpData?.profiles ?? icpData ?? [];
+          setHasICP(
+            Array.isArray(profiles)
+              ? profiles.some((p: { isActive?: boolean }) => p.isActive !== false)
+              : false,
+          );
         }
 
         const metricsData: PipelineMetrics = await metricsRes.json();
@@ -317,6 +330,22 @@ export default function PipelineDashboard() {
         </Card>
       </section>
 
+      {/* ICP Warning */}
+      {hasICP === false && (
+        <Alert>
+          <AlertTitle>No ICP profiles defined</AlertTitle>
+          <AlertDescription className="flex items-center justify-between">
+            <span>
+              The pipeline needs at least one active ICP profile to discover leads. Define your
+              ideal customer profiles first.
+            </span>
+            <Button variant="outline" size="sm" asChild>
+              <a href="/icp">Go to ICP</a>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Controls */}
       <Card aria-label="Pipeline controls">
         <CardHeader>
@@ -337,7 +366,7 @@ export default function PipelineDashboard() {
             <Button
               variant="secondary"
               onClick={handleManualRun}
-              disabled={actionLoading !== null || hasActiveRun}
+              disabled={actionLoading !== null || hasActiveRun || hasICP === false}
             >
               {hasActiveRun
                 ? 'Pipeline Running...'

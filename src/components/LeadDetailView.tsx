@@ -139,6 +139,43 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
     setGeneratedMessage(null);
     setMessageError(null);
     try {
+      // Fetch pipeline config for real product context and email settings for sender name
+      let productContext = '';
+      let senderName = '';
+      try {
+        const [configRes, emailRes] = await Promise.all([
+          fetch('/api/pipeline/config'),
+          fetch('/api/pipeline/email/status'),
+        ]);
+        if (configRes.ok) {
+          const config = await configRes.json();
+          productContext = [config.productContext, config.valueProposition, config.targetPainPoints]
+            .filter(Boolean)
+            .join('. ');
+        }
+        if (emailRes.ok) {
+          const emailStatus = await emailRes.json();
+          senderName = emailStatus?.sendingName || '';
+        }
+      } catch {
+        /* use fallback */
+      }
+      if (!productContext) {
+        productContext = 'Our product helps companies solve their key challenges.';
+      }
+      // Fallback sender name from session
+      if (!senderName) {
+        try {
+          const sessionRes = await fetch('/api/auth/session');
+          if (sessionRes.ok) {
+            const sess = await sessionRes.json();
+            senderName = sess?.name?.split(' ')[0] || sess?.email?.split('@')[0] || '';
+          }
+        } catch {
+          /* silent */
+        }
+      }
+
       const res = await fetch('/api/messages/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -146,14 +183,56 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
           leadId: lead.id,
           messageType: 'cold_email',
           tone: 'professional',
-          productContext: 'Our product helps companies grow faster.',
+          productContext,
         }),
       });
       const data = await res.json();
-      if (!res.ok) setMessageError(data.message ?? 'Failed to generate message');
-      else setGeneratedMessage(data.message);
+      if (!res.ok) {
+        setMessageError(data.message ?? 'Failed to generate message');
+      } else {
+        let msg = data.message as string;
+        if (senderName) {
+          msg = msg.replace(/\[Your Name\]/gi, senderName);
+        }
+        setGeneratedMessage(msg);
+      }
     } catch {
       setMessageError('Network error generating message');
+    } finally {
+      setGeneratingMessage(false);
+    }
+  }
+
+  async function handleSendAndMove() {
+    if (!lead || !generatedMessage) return;
+    setGeneratingMessage(true);
+    try {
+      // Record the outreach
+      await fetch('/api/outreach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: lead.id,
+          channel: 'email',
+          messageContent: generatedMessage,
+        }),
+      });
+
+      // Move to Contacted if currently New
+      if (lead.crmStatus === 'New') {
+        await fetch(`/api/crm/${lead.id}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toStatus: 'Contacted' }),
+        });
+      }
+
+      // Refresh data
+      setGeneratedMessage(null);
+      fetchLead();
+      fetchOutreach();
+    } catch {
+      setMessageError('Failed to send and record outreach');
     } finally {
       setGeneratingMessage(false);
     }
@@ -498,9 +577,33 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                 </Alert>
               )}
               {generatedMessage && (
-                <div className="rounded-lg border bg-muted/50 p-3 text-sm">
-                  <div className="mb-1 font-medium text-muted-foreground">Generated Message</div>
-                  <p className="whitespace-pre-wrap">{generatedMessage}</p>
+                <div className="space-y-3">
+                  <div className="rounded-lg border bg-muted/50 p-3 text-sm">
+                    <div className="mb-1 font-medium text-muted-foreground">Generated Message</div>
+                    <p className="whitespace-pre-wrap">{generatedMessage}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      onClick={handleSendAndMove}
+                      disabled={generatingMessage}
+                    >
+                      {generatingMessage
+                        ? 'Sending...'
+                        : lead.crmStatus === 'New'
+                          ? 'Send & Move to Contacted'
+                          : 'Record Outreach'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleGenerateMessage}
+                      disabled={generatingMessage}
+                    >
+                      Regenerate
+                    </Button>
+                  </div>
                 </div>
               )}
             </CardContent>

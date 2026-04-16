@@ -343,13 +343,23 @@ export function generateFallbackQueries(icp: ICP): AnnotatedQuery[] {
  */
 function generatePainPointQueries(profile: ICPProfile): AnnotatedQueryV2[] {
   const queries: AnnotatedQueryV2[] = [];
-  const maxLen = DEFAULT_CONFIG.maxQueryLength;
 
-  for (const painPoint of profile.painPoints) {
-    const queryText = truncateQuery(
-      sanitizeQuery(`"${profile.targetRole}" "${profile.industry}" ${painPoint}`),
-      maxLen,
-    );
+  // Extract short keyword phrases from pain points instead of full sentences
+  for (const painPoint of profile.painPoints.slice(0, 3)) {
+    // Take first 3-4 meaningful words from the pain point
+    const keywords = painPoint
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 4)
+      .join(' ');
+
+    if (!keywords) continue;
+
+    const queryText = sanitizeQuery(
+      `"${profile.targetRole}" ${profile.industry} ${keywords}`,
+    ).slice(0, 120);
+
     if (queryText.length > 0) {
       queries.push({
         query: queryText,
@@ -370,13 +380,21 @@ function generatePainPointQueries(profile: ICPProfile): AnnotatedQueryV2[] {
  */
 function generateBuyingSignalQueries(profile: ICPProfile): AnnotatedQueryV2[] {
   const queries: AnnotatedQueryV2[] = [];
-  const maxLen = DEFAULT_CONFIG.maxQueryLength;
 
-  for (const signal of profile.buyingSignals) {
-    const queryText = truncateQuery(
-      sanitizeQuery(`"${profile.targetRole}" "${profile.industry}" ${signal}`),
-      maxLen,
-    );
+  for (const signal of profile.buyingSignals.slice(0, 3)) {
+    const keywords = signal
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 4)
+      .join(' ');
+
+    if (!keywords) continue;
+
+    const queryText = sanitizeQuery(
+      `"${profile.targetRole}" ${profile.industry} ${keywords}`,
+    ).slice(0, 120);
+
     if (queryText.length > 0) {
       queries.push({
         query: queryText,

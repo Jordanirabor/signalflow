@@ -43,6 +43,69 @@ export async function extractCompanyDomain(prospect: ProspectContext): Promise<s
     }
   }
 
+  // 4. Fallback: search for the person to find their company domain
+  if (process.env.SERPER_API_KEY && prospect.name) {
+    try {
+      const query = prospect.twitterHandle
+        ? `"${prospect.name}" @${prospect.twitterHandle} company`
+        : `"${prospect.name}" ${prospect.role ?? ''} company email`;
+
+      const res = await fetch('https://google.serper.dev/search', {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': process.env.SERPER_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ q: query.trim(), num: 5 }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const results = data.organic ?? [];
+        for (const result of results) {
+          // Look for LinkedIn profile links to extract company
+          if (result.link?.includes('linkedin.com/in/')) {
+            const snippet = result.snippet ?? '';
+            const atMatch = snippet.match(/\bat\s+([A-Z][A-Za-z0-9\s&.]+?)(?:\s*[·|–—\-]|$)/);
+            if (atMatch) {
+              const companySlug = atMatch[1]
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '');
+              if (companySlug.length > 2) {
+                console.log(
+                  `[EmailDiscovery] Found company "${atMatch[1].trim()}" for "${prospect.name}" via search`,
+                );
+                return `${companySlug}.com`;
+              }
+            }
+          }
+          // Look for company website domains in results
+          const domain = result.link ? new URL(result.link).hostname.replace(/^www\./, '') : null;
+          if (
+            domain &&
+            !domain.includes('linkedin') &&
+            !domain.includes('twitter') &&
+            !domain.includes('x.com') &&
+            !domain.includes('github') &&
+            !domain.includes('google') &&
+            !domain.includes('facebook')
+          ) {
+            console.log(
+              `[EmailDiscovery] Using domain "${domain}" for "${prospect.name}" from search result`,
+            );
+            return domain;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(
+        `[EmailDiscovery] Search fallback failed for "${prospect.name}":`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   return null;
 }
 
@@ -248,11 +311,8 @@ export async function discoverEmail(
 
   // 3. Parse prospect name
   const nameParts = prospect.name.trim().split(/\s+/);
-  if (nameParts.length < 2) {
-    return { ...noResult, companyDomain: domain };
-  }
   const firstName = nameParts[0];
-  const lastName = nameParts[nameParts.length - 1];
+  const lastName = nameParts.length >= 2 ? nameParts[nameParts.length - 1] : firstName;
 
   // 4. Infer email pattern from cache or known emails
   let detectedPattern = cache.getEmailPattern(domain);

@@ -105,6 +105,7 @@ export function validateICPProfile(input: Partial<ICPProfile>): ICPProfileValida
 type ICPProfileRow = {
   id: string;
   founder_id: string;
+  project_id: string | null;
   target_role: string;
   industry: string;
   company_stage: string | null;

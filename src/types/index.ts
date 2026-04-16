@@ -32,11 +32,26 @@ export interface ICP {
   updatedAt: Date;
 }
 
+// --- ICP Project ---
+
+export interface ICPProject {
+  id: string;
+  founderId: string;
+  name: string;
+  productDescription: string;
+  isActive: boolean;
+  isDeleted: boolean;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // --- ICP Profile (Multi-ICP) ---
 
 export interface ICPProfile {
   id: string;
   founderId: string;
+  projectId?: string;
   targetRole: string;
   industry: string;
   companyStage?: string;
@@ -92,6 +107,7 @@ export interface EnrichmentData {
 export interface Lead {
   id: string;
   founderId: string;
+  projectId?: string;
   name: string;
   role: string;
   company: string;
@@ -262,6 +278,7 @@ export interface ApiError {
 export interface PipelineRun {
   id: string;
   founderId: string;
+  projectId?: string;
   status: 'running' | 'completed' | 'failed' | 'partial';
   stagesCompleted: string[];
   stageErrors: Record<string, string>;

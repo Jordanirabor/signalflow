@@ -99,6 +99,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profiles: generatedProfiles,
+          productDescription: productDescription.trim(),
         }),
       });
 

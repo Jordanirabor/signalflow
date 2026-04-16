@@ -1,19 +1,20 @@
-import { validationError } from '@/lib/apiErrors';
+import { getSession } from '@/lib/auth';
 import { getAuthorizeUrl } from '@/services/emailIntegrationService';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
- * GET /api/oauth/gmail/authorize?founderId=<uuid>
+ * GET /api/oauth/gmail/authorize
  * Initiates the Gmail OAuth 2.0 flow by returning the authorization URL.
+ * founderId is derived from the server-side session.
  *
  * Requirements: 9.1
  */
-export async function GET(request: NextRequest) {
-  const founderId = request.nextUrl.searchParams.get('founderId');
-  if (!founderId) {
-    return validationError('founderId query parameter is required', { founderId: 'missing' });
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const authorizeUrl = getAuthorizeUrl(founderId);
+  const authorizeUrl = getAuthorizeUrl(session.founderId);
   return NextResponse.json({ authorizeUrl });
 }

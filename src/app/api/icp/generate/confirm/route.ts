@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { profiles?: Partial<ICPProfile>[] };
+  let body: { profiles?: Partial<ICPProfile>[]; productDescription?: string };
   try {
     body = await request.json();
   } catch {
@@ -36,6 +36,20 @@ export async function POST(request: NextRequest) {
     return validationError('profiles array is required and must not be empty', {
       profiles: 'missing',
     });
+  }
+
+  // Save product description to pipeline config if provided
+  if (body.productDescription?.trim()) {
+    try {
+      await query(
+        `INSERT INTO pipeline_config (founder_id, product_context)
+         VALUES ($1, $2)
+         ON CONFLICT (founder_id) DO UPDATE SET product_context = $2, updated_at = NOW()`,
+        [founderId, body.productDescription.trim()],
+      );
+    } catch {
+      // Non-critical — continue with ICP save
+    }
   }
 
   // Build profile inputs, ensuring founderId is set on each

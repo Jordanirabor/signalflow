@@ -241,51 +241,31 @@ function searchResultToLead(result: SerperOrganicResult, icp: ICP): DiscoveredLe
   const handle = extractHandleFromUrl(result.link);
   if (!handle) return null;
 
-  // Google titles for Twitter profiles are usually:
-  //   "Display Name (@handle) / X"
-  //   "Display Name (@handle) on X"
-  //   "Display Name on X: \"tweet text\""
-  let displayName = '';
+  // Use the title and snippet as raw context — AI will extract the real name later
+  const title = result.title || '';
+  const snippet = result.snippet || '';
 
-  // Try pattern: "Name (@handle)"
+  // Try to get display name from title pattern "Name (@handle) / X"
+  let displayName = '';
   const handlePattern = new RegExp(`^(.+?)\\s*[\\(\\(@]${handle}`, 'i');
-  const handleMatch = result.title.match(handlePattern);
+  const handleMatch = title.match(handlePattern);
   if (handleMatch) {
     displayName = handleMatch[1].trim();
   }
-
-  // Try pattern: "Name / X" or "Name on X"
   if (!displayName) {
-    const slashMatch = result.title.match(/^(.+?)\s*(?:\/|on)\s*X\b/i);
-    if (slashMatch) {
-      const candidate = slashMatch[1].trim();
-      // Only use if it's short enough to be a name (not a tweet)
-      if (candidate.length <= 40) {
-        displayName = candidate;
-      }
+    const slashMatch = title.match(/^(.+?)\s*(?:\/|on)\s*X\b/i);
+    if (slashMatch && slashMatch[1].trim().length <= 40) {
+      displayName = slashMatch[1].trim();
     }
   }
 
-  // Fallback: use the part before any separator, but only if short
-  if (!displayName) {
-    const firstPart = result.title.split(/[/|–—-]/)[0]?.trim() || '';
-    if (firstPart.length <= 40 && firstPart.length > 0) {
-      displayName = firstPart;
-    }
-  }
+  // Clean up
+  displayName = (displayName || '').replace(/[\(\)\[\]|]+$/, '').trim();
 
-  if (!displayName) return null;
+  // If we couldn't get a name from the title, skip — AI batch will handle later
+  if (!displayName || displayName.length > 50 || displayName.includes('...')) return null;
 
-  // Clean up: remove trailing parentheses, brackets, pipes, dashes
-  displayName = displayName.replace(/[\(\)\[\]|]+$/, '').trim();
-
-  // Reject names that look like tweet text (too long, contain sentences)
-  if (displayName.length > 50 || displayName.includes('...')) return null;
-  if (!displayName) return null;
-
-  // The snippet is typically the bio text from the profile
-  const bio = result.snippet || '';
-
+  const bio = snippet || '';
   const role = inferRoleFromBio(bio) || icp.targetRole;
   const company = inferCompanyFromBio(bio) || '';
 
@@ -304,6 +284,84 @@ function searchResultToLead(result: SerperOrganicResult, icp: ICP): DiscoveredLe
     discoverySource: 'twitter_scrape',
     twitterHandle: handle,
   };
+}
+
+/**
+ * Use OpenAI to validate and clean up a batch of discovered leads.
+ * Filters out non-person entries and extracts real names/companies from context.
+ */
+async function aiCleanupLeads(leads: DiscoveredLeadData[]): Promise<DiscoveredLeadData[]> {
+  if (leads.length === 0) return [];
+  if (!process.env.OPENAI_API_KEY) return leads; // No AI available, return as-is
+
+  try {
+    const { default: OpenAI } = await import('openai');
+    const client = new OpenAI();
+
+    const entries = leads
+      .map(
+        (l, i) =>
+          `${i}. Name: "${l.name}", Handle: @${l.twitterHandle}, Role: "${l.role}", Company: "${l.company}"`,
+      )
+      .join('\n');
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0,
+      messages: [
+        {
+          role: 'system',
+          content: `You are a data quality filter. Given a list of potential leads scraped from Twitter/X search results, determine which entries are real people (not companies, bots, news accounts, or garbage data).
+
+For each entry, respond with a JSON array of objects. Each object should have:
+- "index": the original index number
+- "isRealPerson": true/false
+- "correctedName": the real person name if you can determine it (or null)
+- "company": the company they work at if you can determine it (or empty string)
+
+Only include entries where isRealPerson is true. Be strict — reject company accounts, news outlets, job postings, and nonsensical names.`,
+        },
+        {
+          role: 'user',
+          content: entries,
+        },
+      ],
+    });
+
+    const content = response.choices[0]?.message?.content ?? '[]';
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return leads;
+
+    const parsed: Array<{
+      index: number;
+      isRealPerson: boolean;
+      correctedName?: string | null;
+      company?: string;
+    }> = JSON.parse(jsonMatch[0]);
+
+    const cleaned: DiscoveredLeadData[] = [];
+    for (const entry of parsed) {
+      if (!entry.isRealPerson) continue;
+      const original = leads[entry.index];
+      if (!original) continue;
+
+      cleaned.push({
+        ...original,
+        name: entry.correctedName || original.name,
+        company: entry.company || original.company,
+      });
+    }
+
+    console.log(`[TwitterScraper] AI cleanup: ${leads.length} → ${cleaned.length} valid leads`);
+    return cleaned;
+  } catch (err) {
+    console.error(
+      '[TwitterScraper] AI cleanup failed, returning raw leads:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return leads;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +430,9 @@ export const twitterScraper: SourceAdapter = {
       `[TwitterScraper] Discovery complete: ${allLeads.length} leads from ${twitterQueries.length} queries`,
     );
 
-    return allLeads;
+    // Run AI cleanup to filter out non-person entries and correct names
+    const cleaned = await aiCleanupLeads(allLeads);
+    return cleaned;
   },
 
   async enrich(prospect: ProspectContext): Promise<Partial<ExtendedEnrichmentData>> {
