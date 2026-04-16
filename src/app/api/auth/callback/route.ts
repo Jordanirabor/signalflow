@@ -2,6 +2,10 @@ import { exchangeCodeForTokens, fetchUserInfo, setSession } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 
+function baseUrl(request: NextRequest): string {
+  return process.env.NEXT_PUBLIC_BASE_URL ?? request.nextUrl.origin;
+}
+
 /**
  * GET /api/auth/callback
  * Handles the OIDC callback from ConsentKeys.
@@ -13,14 +17,15 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get('code');
   const state = searchParams.get('state');
   const error = searchParams.get('error');
+  const base = baseUrl(request);
 
   if (error) {
     const desc = searchParams.get('error_description') ?? 'Authentication failed';
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(desc)}`, request.url));
+    return NextResponse.redirect(`${base}/login?error=${encodeURIComponent(desc)}`);
   }
 
   if (!code || !state) {
-    return NextResponse.redirect(new URL('/login?error=Missing+code+or+state', request.url));
+    return NextResponse.redirect(`${base}/login?error=Missing+code+or+state`);
   }
 
   const cookieStore = await cookies();
@@ -32,16 +37,15 @@ export async function GET(request: NextRequest) {
   cookieStore.delete('oidc_code_verifier');
 
   if (!savedState || state !== savedState) {
-    return NextResponse.redirect(new URL('/login?error=Invalid+state', request.url));
+    return NextResponse.redirect(`${base}/login?error=Invalid+state`);
   }
 
   if (!codeVerifier) {
-    return NextResponse.redirect(new URL('/login?error=Missing+code+verifier', request.url));
+    return NextResponse.redirect(`${base}/login?error=Missing+code+verifier`);
   }
 
   try {
-    const origin = process.env.NEXT_PUBLIC_BASE_URL ?? request.nextUrl.origin;
-    const redirectUri = `${origin}/api/auth/callback`;
+    const redirectUri = `${base}/api/auth/callback`;
 
     const tokens = await exchangeCodeForTokens(code, redirectUri, codeVerifier);
     const userInfo = await fetchUserInfo(tokens.access_token);
@@ -55,10 +59,10 @@ export async function GET(request: NextRequest) {
       expiresAt: Date.now() + tokens.expires_in * 1000,
     });
 
-    return NextResponse.redirect(new URL('/', request.url));
+    return NextResponse.redirect(`${base}/`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Token exchange failed';
     console.error('[Auth Callback]', msg);
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(msg)}`, request.url));
+    return NextResponse.redirect(`${base}/login?error=${encodeURIComponent(msg)}`);
   }
 }
