@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const origin = request.nextUrl.origin;
+    const origin = process.env.NEXT_PUBLIC_BASE_URL ?? request.nextUrl.origin;
     const redirectUri = `${origin}/api/auth/callback`;
 
     const tokens = await exchangeCodeForTokens(code, redirectUri, codeVerifier);
