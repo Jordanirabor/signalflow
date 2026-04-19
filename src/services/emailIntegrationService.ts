@@ -124,7 +124,8 @@ interface EmailConnectionRow {
   id: string;
   founder_id: string;
   email: string;
-  provider: 'gmail';
+  provider: 'gmail' | 'smtp_imap';
+  active_provider: 'gmail' | 'smtp_imap';
   access_token: string;
   refresh_token: string;
   token_expires_at: Date;
@@ -135,7 +136,7 @@ interface EmailConnectionRow {
   created_at: Date;
 }
 
-const EMAIL_CONNECTION_COLUMNS = `id, founder_id, email, provider, access_token, refresh_token, token_expires_at, sending_name, email_signature, is_active, last_sync_at, created_at`;
+const EMAIL_CONNECTION_COLUMNS = `id, founder_id, email, provider, active_provider, access_token, refresh_token, token_expires_at, sending_name, email_signature, is_active, last_sync_at, created_at`;
 
 function mapEmailConnectionRow(row: EmailConnectionRow): EmailConnection {
   return {
@@ -143,6 +144,7 @@ function mapEmailConnectionRow(row: EmailConnectionRow): EmailConnection {
     founderId: row.founder_id,
     email: row.email,
     provider: row.provider,
+    activeProvider: row.active_provider ?? 'gmail',
     accessToken: row.access_token,
     refreshToken: row.refresh_token,
     tokenExpiresAt: row.token_expires_at,
@@ -284,10 +286,22 @@ export async function updateEmailSettings(
   sendingName: string,
   emailSignature: string,
 ): Promise<void> {
-  await query(
+  // Try to update existing row first
+  const result = await query(
     `UPDATE email_connection SET sending_name = $2, email_signature = $3 WHERE founder_id = $1`,
     [founderId, sendingName, emailSignature],
   );
+
+  // If no row exists yet (no email provider connected), create a minimal one
+  // so sending settings can still be saved and used for message generation
+  if (result.rowCount === 0) {
+    await query(
+      `INSERT INTO email_connection (founder_id, email, provider, active_provider, access_token, refresh_token, token_expires_at, sending_name, email_signature, is_active)
+       VALUES ($1, '', 'none', 'none', '', '', NOW(), $2, $3, false)
+       ON CONFLICT (founder_id) DO UPDATE SET sending_name = $2, email_signature = $3`,
+      [founderId, sendingName, emailSignature],
+    );
+  }
 }
 
 /**
@@ -387,10 +401,10 @@ async function sendTestEmail(connection: EmailConnection): Promise<void> {
   const rawMessage = [
     `From: ${connection.email}`,
     `To: ${connection.email}`,
-    `Subject: SignalFlow Email Connection Verified`,
+    `Subject: Moatify Email Connection Verified`,
     'Content-Type: text/plain; charset=utf-8',
     '',
-    'Your Gmail account has been successfully connected to SignalFlow. Automated outreach is now enabled.',
+    'Your Gmail account has been successfully connected to Moatify. Automated outreach is now enabled.',
   ].join('\r\n');
 
   const encodedMessage = Buffer.from(rawMessage).toString('base64url');

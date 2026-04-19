@@ -1,5 +1,6 @@
 'use client';
 
+import ComposeEmailModal from '@/components/ComposeEmailModal';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -42,6 +43,10 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
   } | null>(null);
   const [refreshingResearch, setRefreshingResearch] = useState(false);
   const [project, setProject] = useState<ICPProject | null>(null);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeBody, setComposeBody] = useState('');
+  const [steeringContext, setSteeringContext] = useState('');
+  const [savingSteering, setSavingSteering] = useState(false);
 
   const fetchLead = useCallback(async () => {
     try {
@@ -105,6 +110,13 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
       fetchCorrelation(),
     ]).finally(() => setLoading(false));
   }, [fetchLead, fetchOutreach, fetchCallNotes, fetchResearchProfile, fetchCorrelation]);
+
+  // Sync steering context from lead
+  useEffect(() => {
+    if (lead) {
+      setSteeringContext(lead.steeringContext ?? '');
+    }
+  }, [lead]);
 
   // Fetch associated project when lead is loaded
   useEffect(() => {
@@ -217,41 +229,6 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
     }
   }
 
-  async function handleSendAndMove() {
-    if (!lead || !generatedMessage) return;
-    setGeneratingMessage(true);
-    try {
-      // Record the outreach
-      await fetch('/api/outreach', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          leadId: lead.id,
-          channel: 'email',
-          messageContent: generatedMessage,
-        }),
-      });
-
-      // Move to Contacted if currently New
-      if (lead.crmStatus === 'New') {
-        await fetch(`/api/crm/${lead.id}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toStatus: 'Contacted' }),
-        });
-      }
-
-      // Refresh data
-      setGeneratedMessage(null);
-      fetchLead();
-      fetchOutreach();
-    } catch {
-      setMessageError('Failed to send and record outreach');
-    } finally {
-      setGeneratingMessage(false);
-    }
-  }
-
   async function handleRefreshResearch() {
     setRefreshingResearch(true);
     try {
@@ -261,6 +238,28 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
       /* silent */
     } finally {
       setRefreshingResearch(false);
+    }
+  }
+
+  async function handleSaveSteering() {
+    if (!lead) return;
+    const trimmed = steeringContext.slice(0, 1000);
+    if (trimmed === (lead.steeringContext ?? '')) return;
+    setSavingSteering(true);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ steeringContext: trimmed }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setLead(updated);
+      }
+    } catch {
+      /* silent */
+    } finally {
+      setSavingSteering(false);
     }
   }
 
@@ -595,6 +594,17 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                 variant="outline"
                 size="sm"
                 className="w-full"
+                onClick={() => {
+                  setComposeBody('');
+                  setComposeOpen(true);
+                }}
+              >
+                Compose Email
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
                 onClick={handleGenerateMessage}
                 disabled={generatingMessage}
               >
@@ -615,14 +625,12 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                     <Button
                       size="sm"
                       className="w-full"
-                      onClick={handleSendAndMove}
-                      disabled={generatingMessage}
+                      onClick={() => {
+                        setComposeBody(generatedMessage ?? '');
+                        setComposeOpen(true);
+                      }}
                     >
-                      {generatingMessage
-                        ? 'Sending...'
-                        : lead.crmStatus === 'New'
-                          ? 'Send & Move to Contacted'
-                          : 'Record Outreach'}
+                      Send Email
                     </Button>
                     <Button
                       variant="outline"
@@ -635,6 +643,29 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                   </div>
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Steering</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Custom instructions for message generation for this lead.
+              </p>
+              <textarea
+                className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder="e.g. Mention their recent Series B funding round..."
+                maxLength={1000}
+                value={steeringContext}
+                onChange={(e) => setSteeringContext(e.target.value)}
+                onBlur={handleSaveSteering}
+                disabled={savingSteering}
+              />
+              <div className="text-right text-xs text-muted-foreground">
+                {steeringContext.length}/1000
+              </div>
             </CardContent>
           </Card>
 
@@ -693,6 +724,26 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
                         </Badge>
                       </div>
                       <p className="mt-1">{note.rawText}</p>
+                      {note.painPoints.length > 0 && (
+                        <div className="mt-2">
+                          <span className="font-medium text-muted-foreground">Pain Points</span>
+                          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                            {note.painPoints.map((pp, i) => (
+                              <li key={i}>{pp}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {note.objections.length > 0 && (
+                        <div className="mt-2">
+                          <span className="font-medium text-muted-foreground">Objections</span>
+                          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                            {note.objections.map((obj, i) => (
+                              <li key={i}>{obj}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                       {note.tags.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {note.tags.map((tag) => (
@@ -710,6 +761,17 @@ export default function LeadDetailView({ leadId, onBack }: { leadId: string; onB
           </Card>
         </div>
       </div>
+
+      <ComposeEmailModal
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        lead={{ id: lead.id, name: lead.name, email: lead.email, crmStatus: lead.crmStatus }}
+        prefillBody={composeBody}
+        onSuccess={() => {
+          fetchLead();
+          fetchOutreach();
+        }}
+      />
     </div>
   );
 }

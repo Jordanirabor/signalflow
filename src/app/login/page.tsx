@@ -21,7 +21,7 @@ function LoginContent() {
     <div className="flex min-h-screen items-center justify-center">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl">SignalFlow</CardTitle>
+          <CardTitle className="text-2xl">Moatify</CardTitle>
           <CardDescription>GTM Intelligence Engine</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -59,7 +59,7 @@ export default function LoginPage() {
         <div className="flex min-h-screen items-center justify-center">
           <Card className="w-full max-w-md">
             <CardHeader className="text-center">
-              <CardTitle className="text-2xl">SignalFlow</CardTitle>
+              <CardTitle className="text-2xl">Moatify</CardTitle>
               <CardDescription>GTM Intelligence Engine</CardDescription>
             </CardHeader>
             <CardContent>

@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
       expiresAt: Date.now() + tokens.expires_in * 1000,
     });
 
-    return NextResponse.redirect(`${base}/`);
+    return NextResponse.redirect(`${base}/dashboard`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Token exchange failed';
     console.error('[Auth Callback]', msg);

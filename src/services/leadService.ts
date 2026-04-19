@@ -1,5 +1,6 @@
 import { query } from '@/lib/db';
 import type { CRMStatus, EnrichmentData, ICPProfile, Lead, ScoreBreakdown } from '@/types';
+import type { WaterfallStep } from './discovery/types';
 
 // ---------------------------------------------------------------------------
 // Row type returned by Postgres
@@ -27,6 +28,7 @@ interface LeadRow {
   correlation_flag: string | null;
   icp_profile_id: string | null;
   project_id: string | null;
+  steering_context: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,8 +38,8 @@ interface LeadRow {
 export interface CreateLeadInput {
   founderId: string;
   name: string;
-  role: string;
-  company: string;
+  role?: string;
+  company?: string;
   industry?: string;
   geography?: string;
   icpProfileId?: string;
@@ -50,6 +52,7 @@ export interface UpdateLeadInput {
   company?: string;
   industry?: string;
   geography?: string;
+  steeringContext?: string;
 }
 
 export interface ListLeadsOptions {
@@ -57,6 +60,7 @@ export interface ListLeadsOptions {
   minScore?: number;
   sortBy?: 'score' | 'created';
   projectId?: string;
+  icpProfileId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,13 +90,14 @@ function mapRow(row: LeadRow): Lead {
     correlationFlag: row.correlation_flag ?? undefined,
     icpProfileId: row.icp_profile_id ?? undefined,
     projectId: row.project_id ?? undefined,
+    steeringContext: row.steering_context ?? undefined,
   };
 }
 
 const LEAD_COLUMNS = `id, founder_id, name, role, company, industry, geography, email,
   lead_score, score_breakdown, enrichment_status, enrichment_data,
   crm_status, is_deleted, deleted_at, created_at, updated_at,
-  correlation_score, correlation_flag, icp_profile_id, project_id`;
+  correlation_score, correlation_flag, icp_profile_id, project_id, steering_context`;
 
 // ---------------------------------------------------------------------------
 // CRUD operations
@@ -114,8 +119,8 @@ export async function createLead(
     [
       input.founderId,
       input.name,
-      input.role,
-      input.company,
+      input.role ?? '',
+      input.company ?? '',
       input.industry ?? null,
       input.geography ?? null,
       score,
@@ -179,6 +184,12 @@ export async function listLeads(options: ListLeadsOptions): Promise<Lead[]> {
     paramIdx++;
   }
 
+  if (options.icpProfileId !== undefined) {
+    conditions.push(`icp_profile_id = $${paramIdx}`);
+    params.push(options.icpProfileId);
+    paramIdx++;
+  }
+
   const orderBy = options.sortBy === 'created' ? 'created_at DESC' : 'lead_score DESC';
 
   const result = await query<LeadRow>(
@@ -217,6 +228,10 @@ export async function updateLead(id: string, input: UpdateLeadInput): Promise<Le
   if (input.geography !== undefined) {
     sets.push(`geography = $${paramIdx++}`);
     params.push(input.geography);
+  }
+  if (input.steeringContext !== undefined) {
+    sets.push(`steering_context = $${paramIdx++}`);
+    params.push(input.steeringContext);
   }
 
   if (sets.length === 0) {
@@ -271,6 +286,8 @@ export async function updateLeadEnrichment(
   enrichmentData: EnrichmentData,
   enrichmentStatus: 'complete' | 'partial' | 'pending',
   icpOrProfile: import('@/types').ICP | ICPProfile,
+  emailDiscoveryMethod?: string | null,
+  emailDiscoverySteps?: WaterfallStep[],
 ): Promise<Lead | null> {
   // First get the current lead to have its fields for scoring
   const existing = await getLeadById(leadId);
@@ -319,6 +336,8 @@ export async function updateLeadEnrichment(
          lead_score = $3,
          score_breakdown = $4,
          email = COALESCE($6, email),
+         email_discovery_method = COALESCE($7, email_discovery_method),
+         email_discovery_steps = COALESCE($8, email_discovery_steps),
          updated_at = NOW()
      WHERE id = $5 AND is_deleted = false
      RETURNING ${LEAD_COLUMNS}`,
@@ -329,6 +348,8 @@ export async function updateLeadEnrichment(
       JSON.stringify(breakdown),
       leadId,
       enrichmentData.email ?? null,
+      emailDiscoveryMethod ?? null,
+      emailDiscoverySteps ? JSON.stringify(emailDiscoverySteps) : null,
     ],
   );
 

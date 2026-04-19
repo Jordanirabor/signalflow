@@ -1,3 +1,4 @@
+import { getProjectById } from '@/services/icpProjectService';
 import { getPipelineConfig, savePipelineConfig } from '@/services/pipelineConfigService';
 import type { OutreachStrategy, PipelineConfig } from '@/types';
 
@@ -15,10 +16,26 @@ export function extractStrategy(config: PipelineConfig): OutreachStrategy {
 
 /**
  * Get the outreach strategy for a founder.
- * Fetches the pipeline config and returns only the strategy-related fields.
+ * When strategyScope is 'per_project' and a projectId is provided, loads
+ * strategy fields from the project record. Falls back to global strategy
+ * if the project is not found or strategyScope is 'global'.
  */
-export async function getOutreachStrategy(founderId: string): Promise<OutreachStrategy> {
+export async function getOutreachStrategy(
+  founderId: string,
+  projectId?: string,
+): Promise<OutreachStrategy> {
   const config = await getPipelineConfig(founderId);
+  if (config.strategyScope === 'per_project' && projectId) {
+    const project = await getProjectById(projectId);
+    if (project) {
+      return {
+        productContext: project.productDescription,
+        valueProposition: project.valueProposition,
+        targetPainPoints: project.targetPainPoints,
+        tonePreference: config.tonePreference,
+      };
+    }
+  }
   return extractStrategy(config);
 }
 

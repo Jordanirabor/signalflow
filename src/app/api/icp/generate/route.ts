@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
 
   const desc = body.productDescription?.trim();
   if (!desc) {
-    return validationError('productDescription is required', { productDescription: 'missing' });
+    return validationError('description is required', { description: 'missing' });
   }
 
   const founderId = session.founderId;

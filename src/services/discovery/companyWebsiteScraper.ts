@@ -15,7 +15,7 @@ import { acquirePermit, recordRequest } from './rateLimiter';
 const RATE_LIMIT_SOURCE = 'company_website';
 const FETCH_TIMEOUT_MS = 10_000; // 10 seconds
 
-const USER_AGENT = 'Mozilla/5.0 (compatible; SignalFlowBot/1.0; +https://signalflow.dev/bot)';
+const USER_AGENT = 'Mozilla/5.0 (compatible; MoatifyBot/1.0; +https://moatify.io/bot)';
 
 /** Subpages to scan for team/about content */
 const SUBPAGE_PATHS = ['/about', '/team'];

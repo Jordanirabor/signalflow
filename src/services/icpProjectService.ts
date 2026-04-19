@@ -1,5 +1,6 @@
 import { query } from '@/lib/db';
 import type { ICPProject } from '@/types';
+import OpenAI from 'openai';
 
 // ---------------------------------------------------------------------------
 // Row type & mapper
@@ -15,6 +16,8 @@ type ICPProjectRow = {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  value_proposition: string;
+  target_pain_points: string[];
 };
 
 function mapRow(row: ICPProjectRow): ICPProject {
@@ -28,6 +31,8 @@ function mapRow(row: ICPProjectRow): ICPProject {
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    valueProposition: row.value_proposition ?? '',
+    targetPainPoints: row.target_pain_points ?? [],
   };
 }
 
@@ -90,18 +95,65 @@ async function isNameUnique(
 }
 
 // ---------------------------------------------------------------------------
+// AI-Inferred Project Naming
+// ---------------------------------------------------------------------------
+
+export async function generateProjectName(description: string): Promise<string> {
+  try {
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const completion = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Generate a concise project name (max 60 characters) from the description. Return ONLY the name, no quotes, no explanation.',
+        },
+        { role: 'user', content: description },
+      ],
+      max_tokens: 30,
+      temperature: 0.3,
+    });
+    const name = completion.choices[0]?.message?.content?.trim() ?? '';
+    if (!name) throw new Error('Empty response');
+    return name.slice(0, 60);
+  } catch {
+    return null as unknown as string; // caller handles fallback
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CRUD Functions (Task 2.1)
 // ---------------------------------------------------------------------------
 
 /**
  * Create a new ICP project. Validates name uniqueness, length constraints.
+ * When name is empty, uses AI to generate a name from the description,
+ * falling back to "Project N" format.
  */
 export async function createProject(
   founderId: string,
   name: string,
   productDescription: string,
 ): Promise<ICPProject> {
-  const nameValidation = validateProjectName(name);
+  let resolvedName = name;
+
+  if (!resolvedName || resolvedName.trim().length === 0) {
+    const aiName = await generateProjectName(productDescription);
+    if (aiName) {
+      resolvedName = aiName;
+    } else {
+      // Fallback: count existing projects and generate "Project N"
+      const countResult = await query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM icp_project WHERE founder_id = $1`,
+        [founderId],
+      );
+      const n = parseInt(countResult.rows[0].count, 10) + 1;
+      resolvedName = `Project ${n}`;
+    }
+  }
+
+  const nameValidation = validateProjectName(resolvedName);
   if (!nameValidation.valid) {
     throw new Error(`Invalid project: ${nameValidation.errors.join('; ')}`);
   }
@@ -111,17 +163,17 @@ export async function createProject(
     throw new Error(`Invalid project: ${descValidation.errors.join('; ')}`);
   }
 
-  const unique = await isNameUnique(founderId, name);
+  const unique = await isNameUnique(founderId, resolvedName);
   if (!unique) {
-    throw new Error(`A project with the name "${name}" already exists for this founder`);
+    throw new Error(`A project with the name "${resolvedName}" already exists for this founder`);
   }
 
   const result = await query<ICPProjectRow>(
-    `INSERT INTO icp_project (founder_id, name, product_description)
-     VALUES ($1, $2, $3)
+    `INSERT INTO icp_project (founder_id, name, product_description, value_proposition, target_pain_points)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING id, founder_id, name, product_description, is_active, is_deleted,
-               deleted_at, created_at, updated_at`,
-    [founderId, name, productDescription],
+               deleted_at, created_at, updated_at, value_proposition, target_pain_points`,
+    [founderId, resolvedName, productDescription, '', '{}'],
   );
 
   return mapRow(result.rows[0]);
@@ -133,7 +185,7 @@ export async function createProject(
 export async function getProjectById(id: string): Promise<ICPProject | null> {
   const result = await query<ICPProjectRow>(
     `SELECT id, founder_id, name, product_description, is_active, is_deleted,
-            deleted_at, created_at, updated_at
+            deleted_at, created_at, updated_at, value_proposition, target_pain_points
      FROM icp_project
      WHERE id = $1`,
     [id],
@@ -149,7 +201,7 @@ export async function getProjectById(id: string): Promise<ICPProject | null> {
 export async function listProjects(founderId: string): Promise<ICPProject[]> {
   const result = await query<ICPProjectRow>(
     `SELECT id, founder_id, name, product_description, is_active, is_deleted,
-            deleted_at, created_at, updated_at
+            deleted_at, created_at, updated_at, value_proposition, target_pain_points
      FROM icp_project
      WHERE founder_id = $1 AND is_deleted = false
      ORDER BY created_at DESC`,
@@ -165,7 +217,7 @@ export async function listProjects(founderId: string): Promise<ICPProject[]> {
 export async function getActiveProjects(founderId: string): Promise<ICPProject[]> {
   const result = await query<ICPProjectRow>(
     `SELECT id, founder_id, name, product_description, is_active, is_deleted,
-            deleted_at, created_at, updated_at
+            deleted_at, created_at, updated_at, value_proposition, target_pain_points
      FROM icp_project
      WHERE founder_id = $1 AND is_active = true AND is_deleted = false
      ORDER BY created_at DESC`,
@@ -185,13 +237,20 @@ export async function getActiveProjects(founderId: string): Promise<ICPProject[]
  */
 export async function updateProject(
   id: string,
-  input: { name?: string; productDescription?: string },
+  input: {
+    name?: string;
+    productDescription?: string;
+    valueProposition?: string;
+    targetPainPoints?: string[];
+  },
 ): Promise<ICPProject | null> {
   const existing = await getProjectById(id);
   if (!existing) return null;
 
   const newName = input.name ?? existing.name;
   const newDescription = input.productDescription ?? existing.productDescription;
+  const newValueProposition = input.valueProposition ?? existing.valueProposition;
+  const newTargetPainPoints = input.targetPainPoints ?? existing.targetPainPoints;
 
   if (input.name !== undefined) {
     const nameValidation = validateProjectName(input.name);
@@ -214,11 +273,11 @@ export async function updateProject(
 
   const result = await query<ICPProjectRow>(
     `UPDATE icp_project
-     SET name = $1, product_description = $2, updated_at = NOW()
-     WHERE id = $3
+     SET name = $1, product_description = $2, value_proposition = $3, target_pain_points = $4, updated_at = NOW()
+     WHERE id = $5
      RETURNING id, founder_id, name, product_description, is_active, is_deleted,
-               deleted_at, created_at, updated_at`,
-    [newName, newDescription, id],
+               deleted_at, created_at, updated_at, value_proposition, target_pain_points`,
+    [newName, newDescription, newValueProposition, newTargetPainPoints, id],
   );
 
   if (result.rows.length === 0) return null;
@@ -245,7 +304,7 @@ export async function archiveProject(id: string): Promise<ICPProject | null> {
      SET is_active = false, updated_at = NOW()
      WHERE id = $1
      RETURNING id, founder_id, name, product_description, is_active, is_deleted,
-               deleted_at, created_at, updated_at`,
+               deleted_at, created_at, updated_at, value_proposition, target_pain_points`,
     [id],
   );
 
@@ -273,7 +332,7 @@ export async function softDeleteProject(id: string): Promise<ICPProject | null> 
      SET is_deleted = true, deleted_at = NOW(), updated_at = NOW()
      WHERE id = $1
      RETURNING id, founder_id, name, product_description, is_active, is_deleted,
-               deleted_at, created_at, updated_at`,
+               deleted_at, created_at, updated_at, value_proposition, target_pain_points`,
     [id],
   );
 
@@ -293,7 +352,7 @@ export async function restoreProject(id: string): Promise<ICPProject | null> {
      SET is_deleted = false, is_active = true, deleted_at = NULL, updated_at = NOW()
      WHERE id = $1
      RETURNING id, founder_id, name, product_description, is_active, is_deleted,
-               deleted_at, created_at, updated_at`,
+               deleted_at, created_at, updated_at, value_proposition, target_pain_points`,
     [id],
   );
 

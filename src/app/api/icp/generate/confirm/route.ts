@@ -2,7 +2,7 @@ import { dbWriteError, validationError } from '@/lib/apiErrors';
 import { getSession } from '@/lib/auth';
 import { query } from '@/lib/db';
 import { replaceICPSet } from '@/services/icpProfileService';
-import { getProjectById, updateProject } from '@/services/icpProjectService';
+import { createProject, getProjectById, updateProject } from '@/services/icpProjectService';
 import { calculateLeadScoreV2 } from '@/services/scoringService';
 import type { EnrichmentData, ICPProfile, ScoreBreakdownV2 } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
@@ -14,9 +14,14 @@ import { NextRequest, NextResponse } from 'next/server';
  * associating each lead with the best-matching profile.
  * founderId is derived from the server-side session.
  *
- * Body: { profiles: Array<profile data> }
+ * When no projectId is provided, a new project is created automatically.
+ * If projectName is provided, it is used as the project name (custom name).
+ * If projectName is omitted/empty, AI-inferred naming kicks in via createProject,
+ * with fallback to "Project N".
  *
- * Requirements: 3.1, 3.2, 3.3, 3.4, 7.1, 7.2, 7.3, 7.4, 7.5
+ * Body: { profiles: Array<profile data>, productDescription?, projectId?, projectName? }
+ *
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 7.1, 7.2, 7.3, 7.4, 7.5
  */
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -24,7 +29,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { profiles?: Partial<ICPProfile>[]; productDescription?: string; projectId?: string };
+  let body: {
+    profiles?: Partial<ICPProfile>[];
+    productDescription?: string;
+    projectId?: string;
+    projectName?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -32,12 +42,30 @@ export async function POST(request: NextRequest) {
   }
 
   const founderId = session.founderId;
-  const projectId = body.projectId?.trim() || undefined;
+  let projectId = body.projectId?.trim() || undefined;
 
   if (!Array.isArray(body.profiles) || body.profiles.length === 0) {
     return validationError('profiles array is required and must not be empty', {
       profiles: 'missing',
     });
+  }
+
+  // If no projectId, auto-create a project.
+  // Req 3.4: If projectName is provided, use it (custom name bypasses AI inference).
+  // Req 3.1: If projectName is empty/missing, createProject triggers AI-inferred naming.
+  // Req 3.5: On AI failure, createProject falls back to "Project N".
+  if (!projectId && body.productDescription?.trim()) {
+    try {
+      const projectName = body.projectName?.trim() || '';
+      const newProject = await createProject(
+        founderId,
+        projectName,
+        body.productDescription.trim(),
+      );
+      projectId = newProject.id;
+    } catch {
+      // Non-critical — continue without a project
+    }
   }
 
   // Store product description on the project if projectId is provided

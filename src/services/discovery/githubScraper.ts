@@ -21,7 +21,7 @@ import { acquirePermit, recordRequest } from './rateLimiter';
 
 const RATE_LIMIT_SOURCE = 'github';
 const GITHUB_API_BASE = 'https://api.github.com';
-const USER_AGENT = 'SignalFlow-GTM-Engine/1.0';
+const USER_AGENT = 'Moatify-GTM-Engine/1.0';
 
 /** Technical role keywords that trigger GitHub discovery */
 const TECHNICAL_ROLE_KEYWORDS = ['engineer', 'cto', 'developer', 'architect', 'technical'];

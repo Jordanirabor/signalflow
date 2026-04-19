@@ -14,7 +14,7 @@ import {
 } from './discovery/discoveryEngine';
 import { enrichProspect } from './discovery/enrichmentPipeline';
 import { createRunCache } from './discovery/runCache';
-import type { ProspectContext, RunCache } from './discovery/types';
+import type { ProspectContext, RunCache, WaterfallStep } from './discovery/types';
 
 // ---------------------------------------------------------------------------
 // Enrichment Source Interface — kept for backward compatibility
@@ -28,6 +28,8 @@ export interface EnrichmentSource {
 export interface EnrichmentResult {
   enrichmentData: EnrichmentData;
   enrichmentStatus: 'complete' | 'partial' | 'pending';
+  emailDiscoveryMethod?: string | null;
+  emailDiscoverySteps?: WaterfallStep[];
 }
 
 export interface DiscoveredLeadData {
@@ -132,6 +134,8 @@ export async function enrichLead(
   return {
     enrichmentData: result.enrichmentData as EnrichmentData,
     enrichmentStatus: result.enrichmentStatus,
+    emailDiscoveryMethod: result.emailDiscoveryMethod,
+    emailDiscoverySteps: result.emailDiscoverySteps,
   };
 }
 
@@ -226,6 +230,8 @@ export async function discoverAndEnrichLeads(founderId: string): Promise<Lead[]>
         enrichResult.enrichmentData,
         enrichResult.enrichmentStatus,
         originatingProfile,
+        enrichResult.emailDiscoveryMethod,
+        enrichResult.emailDiscoverySteps,
       );
 
       const finalLead = updatedLead ?? lead;

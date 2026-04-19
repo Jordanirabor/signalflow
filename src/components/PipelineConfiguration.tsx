@@ -14,10 +14,10 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { useSession } from '@/hooks/useSession';
-import type { ApiError, PipelineConfig, TonePreference } from '@/types';
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import type { ApiError, ICPProject, PipelineConfig, TonePreference } from '@/types';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
-const TONE_OPTIONS: TonePreference[] = ['professional', 'casual', 'direct'];
+const TONE_OPTIONS: TonePreference[] = ['warm', 'professional', 'casual', 'direct', 'bold'];
 
 interface FieldErrors {
   runIntervalMinutes?: string;
@@ -29,6 +29,7 @@ interface FieldErrors {
   productContext?: string;
   valueProposition?: string;
   targetPainPoints?: string;
+  globalSteering?: string;
 }
 
 export default function PipelineConfiguration() {
@@ -46,12 +47,21 @@ export default function PipelineConfiguration() {
   const [maxFollowUps, setMaxFollowUps] = useState(3);
   const [minLeadScore, setMinLeadScore] = useState(50);
   const [sequenceCadenceInput, setSequenceCadenceInput] = useState('3, 5, 7');
-  const [tonePreference, setTonePreference] = useState<TonePreference>('professional');
+  const [tonePreference, setTonePreference] = useState<TonePreference>('warm');
 
   // Strategy inputs
   const [productContext, setProductContext] = useState('');
   const [valueProposition, setValueProposition] = useState('');
   const [targetPainPointsInput, setTargetPainPointsInput] = useState('');
+  const [globalSteering, setGlobalSteering] = useState('');
+  const [strategyScope, setStrategyScope] = useState<'global' | 'per_project'>('global');
+
+  // Per-project strategy fields
+  const [projects, setProjects] = useState<ICPProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [projectValueProposition, setProjectValueProposition] = useState('');
+  const [projectPainPointsInput, setProjectPainPointsInput] = useState('');
+  const prevStrategyScopeRef = useRef<'global' | 'per_project'>('global');
 
   const fetchConfig = useCallback(async () => {
     if (!session) return;
@@ -69,6 +79,9 @@ export default function PipelineConfiguration() {
       setProductContext(config.productContext);
       setValueProposition(config.valueProposition);
       setTargetPainPointsInput(config.targetPainPoints.join(', '));
+      setGlobalSteering(config.globalSteering ?? '');
+      setStrategyScope(config.strategyScope ?? 'global');
+      prevStrategyScopeRef.current = config.strategyScope ?? 'global';
     } catch {
       /* silent — defaults are fine */
     } finally {
@@ -76,9 +89,49 @@ export default function PipelineConfiguration() {
     }
   }, [session]);
 
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/projects');
+      if (!res.ok) return;
+      const data: ICPProject[] = await res.json();
+      setProjects(data);
+      if (data.length > 0 && !selectedProjectId) {
+        setSelectedProjectId(data[0].id);
+        setProjectValueProposition(data[0].valueProposition ?? '');
+        setProjectPainPointsInput((data[0].targetPainPoints ?? []).join(', '));
+      }
+    } catch {
+      /* silent */
+    }
+  }, [selectedProjectId]);
+
   useEffect(() => {
     fetchConfig();
-  }, [fetchConfig]);
+    fetchProjects();
+  }, [fetchConfig, fetchProjects]);
+
+  function handleStrategyScopeChange(newScope: 'global' | 'per_project') {
+    // Pre-populate project fields with global values when switching to per-project
+    if (prevStrategyScopeRef.current === 'global' && newScope === 'per_project') {
+      if (!projectValueProposition) {
+        setProjectValueProposition(valueProposition);
+      }
+      if (!projectPainPointsInput) {
+        setProjectPainPointsInput(targetPainPointsInput);
+      }
+    }
+    prevStrategyScopeRef.current = newScope;
+    setStrategyScope(newScope);
+  }
+
+  function handleProjectSelect(projectId: string) {
+    setSelectedProjectId(projectId);
+    const project = projects.find((p) => p.id === projectId);
+    if (project) {
+      setProjectValueProposition(project.valueProposition ?? '');
+      setProjectPainPointsInput((project.targetPainPoints ?? []).join(', '));
+    }
+  }
 
   function validate(): boolean {
     const errors: FieldErrors = {};
@@ -119,6 +172,10 @@ export default function PipelineConfiguration() {
       }
     }
 
+    if (globalSteering.length > 2000) {
+      errors.globalSteering = 'Global steering must be 2000 characters or fewer';
+    }
+
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   }
@@ -153,6 +210,8 @@ export default function PipelineConfiguration() {
           productContext,
           valueProposition,
           targetPainPoints,
+          globalSteering,
+          strategyScope,
         }),
       });
 
@@ -378,6 +437,62 @@ export default function PipelineConfiguration() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
+            <label htmlFor="cfg-globalSteering" className="text-sm font-medium">
+              Global Steering
+            </label>
+            <Textarea
+              id="cfg-globalSteering"
+              value={globalSteering}
+              onChange={(e) => {
+                setGlobalSteering(e.target.value);
+                setFieldErrors((p) => ({ ...p, globalSteering: undefined }));
+              }}
+              maxLength={2000}
+              placeholder="Custom instructions applied to all outreach messages (e.g. always mention our free trial, avoid discussing pricing)..."
+              rows={3}
+              aria-invalid={!!fieldErrors.globalSteering}
+              aria-describedby={
+                fieldErrors.globalSteering ? 'cfg-globalSteering-error' : 'cfg-globalSteering-hint'
+              }
+            />
+            <p id="cfg-globalSteering-hint" className="text-xs text-muted-foreground">
+              {globalSteering.length}/2000 characters — applies to every generated message
+            </p>
+            {fieldErrors.globalSteering && (
+              <p id="cfg-globalSteering-error" className="text-xs text-destructive" role="alert">
+                {fieldErrors.globalSteering}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <span className="text-sm font-medium">Strategy Scope</span>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={strategyScope === 'global' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => handleStrategyScopeChange('global')}
+              >
+                Global
+              </Button>
+              <Button
+                type="button"
+                variant={strategyScope === 'per_project' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => handleStrategyScopeChange('per_project')}
+              >
+                Per-Project
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {strategyScope === 'global'
+                ? 'The same strategy applies to all projects'
+                : 'Each project can have its own value proposition and pain points'}
+            </p>
+          </div>
+
+          <div className="space-y-2">
             <label htmlFor="cfg-productContext" className="text-sm font-medium">
               Product Context
             </label>
@@ -390,34 +505,89 @@ export default function PipelineConfiguration() {
             />
           </div>
 
-          <div className="space-y-2">
-            <label htmlFor="cfg-valueProposition" className="text-sm font-medium">
-              Value Proposition
-            </label>
-            <Textarea
-              id="cfg-valueProposition"
-              value={valueProposition}
-              onChange={(e) => setValueProposition(e.target.value)}
-              placeholder="What unique value does your product deliver to prospects?"
-              rows={3}
-            />
-          </div>
+          {strategyScope === 'global' && (
+            <>
+              <div className="space-y-2">
+                <label htmlFor="cfg-valueProposition" className="text-sm font-medium">
+                  Value Proposition
+                </label>
+                <Textarea
+                  id="cfg-valueProposition"
+                  value={valueProposition}
+                  onChange={(e) => setValueProposition(e.target.value)}
+                  placeholder="What unique value does your product deliver to prospects?"
+                  rows={3}
+                />
+              </div>
 
-          <div className="space-y-2">
-            <label htmlFor="cfg-painPoints" className="text-sm font-medium">
-              Target Pain Points
-            </label>
-            <Input
-              id="cfg-painPoints"
-              type="text"
-              value={targetPainPointsInput}
-              onChange={(e) => setTargetPainPointsInput(e.target.value)}
-              placeholder="Comma-separated, e.g. slow onboarding, high churn, manual processes"
-            />
-            <p className="text-xs text-muted-foreground">
-              Comma-separated list of pain points your product addresses
-            </p>
-          </div>
+              <div className="space-y-2">
+                <label htmlFor="cfg-painPoints" className="text-sm font-medium">
+                  Target Pain Points
+                </label>
+                <Input
+                  id="cfg-painPoints"
+                  type="text"
+                  value={targetPainPointsInput}
+                  onChange={(e) => setTargetPainPointsInput(e.target.value)}
+                  placeholder="Comma-separated, e.g. slow onboarding, high churn, manual processes"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Comma-separated list of pain points your product addresses
+                </p>
+              </div>
+            </>
+          )}
+
+          {strategyScope === 'per_project' && (
+            <>
+              <div className="space-y-2">
+                <label htmlFor="cfg-projectSelect" className="text-sm font-medium">
+                  Project
+                </label>
+                <Select value={selectedProjectId ?? ''} onValueChange={handleProjectSelect}>
+                  <SelectTrigger id="cfg-projectSelect">
+                    <SelectValue placeholder="Select a project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="cfg-projectValueProposition" className="text-sm font-medium">
+                  Value Proposition (Project)
+                </label>
+                <Textarea
+                  id="cfg-projectValueProposition"
+                  value={projectValueProposition}
+                  onChange={(e) => setProjectValueProposition(e.target.value)}
+                  placeholder="What unique value does this project deliver?"
+                  rows={3}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="cfg-projectPainPoints" className="text-sm font-medium">
+                  Target Pain Points (Project)
+                </label>
+                <Input
+                  id="cfg-projectPainPoints"
+                  type="text"
+                  value={projectPainPointsInput}
+                  onChange={(e) => setProjectPainPointsInput(e.target.value)}
+                  placeholder="Comma-separated, e.g. slow onboarding, high churn, manual processes"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Comma-separated list of pain points this project addresses
+                </p>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

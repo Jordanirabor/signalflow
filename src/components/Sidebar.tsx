@@ -51,7 +51,7 @@ function SidebarNav() {
           <Button
             key={item.href}
             variant="ghost"
-            className={`justify-start gap-3 ${isActive ? 'bg-accent text-accent-foreground' : ''}`}
+            className={`justify-start gap-3 ${isActive ? 'bg-primary/8 text-primary' : ''}`}
             asChild
           >
             <Link href={item.href}>
@@ -70,9 +70,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     <>
       {/* Desktop sidebar */}
       <aside className="hidden md:flex md:w-60 md:flex-col md:border-r md:bg-muted/40">
-        <div className="px-4 py-3 font-semibold text-lg tracking-tight text-primary">
-          SignalFlow
-        </div>
+        <div className="px-4 py-3 font-semibold text-lg tracking-tight text-primary">Moatify</div>
         <Separator />
         <SidebarNav />
       </aside>
@@ -81,7 +79,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       <Sheet open={isOpen} onOpenChange={onToggle}>
         <SheetContent side="left" className="w-60 p-0">
           <SheetHeader className="px-4 py-3">
-            <SheetTitle>SignalFlow</SheetTitle>
+            <SheetTitle>Moatify</SheetTitle>
           </SheetHeader>
           <Separator />
           <SidebarNav />

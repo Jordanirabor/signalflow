@@ -71,8 +71,8 @@ describe('validatePipelineConfig', () => {
     expect(result.errors.maxFollowUps).toBeDefined();
   });
 
-  it('rejects minLeadScore below 30', () => {
-    const result = validatePipelineConfig({ minLeadScore: 29 });
+  it('rejects minLeadScore below 0', () => {
+    const result = validatePipelineConfig({ minLeadScore: -1 });
     expect(result.valid).toBe(false);
     expect(result.errors.minLeadScore).toBeDefined();
   });
@@ -88,7 +88,7 @@ describe('validatePipelineConfig', () => {
       runIntervalMinutes: 5,
       dailyDiscoveryCap: 500,
       maxFollowUps: 0,
-      minLeadScore: 10,
+      minLeadScore: -1,
     });
     expect(result.valid).toBe(false);
     expect(Object.keys(result.errors)).toHaveLength(4);

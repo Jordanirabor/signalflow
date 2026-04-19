@@ -16,6 +16,22 @@ vi.mock('./rateLimiter', () => ({
   recordRequest: vi.fn(),
 }));
 
+vi.mock('./waterfallEmailFinder', () => ({
+  isObfuscatedName: vi.fn().mockReturnValue(false),
+  resolveObfuscatedName: vi.fn(),
+}));
+
+vi.mock('./discoveryLogger', () => ({
+  logStructured: vi.fn(),
+  logDiscoverySummary: vi.fn(),
+  logEnrichmentSummary: vi.fn(),
+  logPipelineRunSummary: vi.fn(),
+}));
+
+vi.mock('../scoringService', () => ({
+  calculateLeadScoreV2: vi.fn().mockReturnValue({ score: 50, breakdown: {} }),
+}));
+
 vi.mock('./queryGenerator', () => ({
   generateQueries: vi.fn().mockResolvedValue({
     queries: [
@@ -24,6 +40,29 @@ vi.mock('./queryGenerator', () => ({
     ],
     generationMethod: 'template_fallback',
   }),
+  generateCreativeQueries: vi.fn().mockResolvedValue({
+    queries: [
+      { query: 'test query 1', vector: 'linkedin' },
+      { query: 'test query 2', vector: 'general' },
+    ],
+    generationMethod: 'ai_creative',
+  }),
+  generateQueriesForProfile: vi.fn().mockResolvedValue({
+    queries: [
+      { query: 'test query 1', vector: 'linkedin' },
+      { query: 'test query 2', vector: 'general' },
+    ],
+    generationMethod: 'template_fallback',
+  }),
+  generateRefinedQueries: vi.fn().mockResolvedValue({
+    queries: [
+      { query: 'refined query 1', vector: 'linkedin' },
+      { query: 'refined query 2', vector: 'directory' },
+    ],
+    generationMethod: 'template_fallback',
+  }),
+  persistQueryHistory: vi.fn().mockResolvedValue(undefined),
+  sanitizeForSerper: vi.fn((q: string) => q),
 }));
 
 vi.mock('./googleSearchScraper', () => ({
@@ -98,6 +137,7 @@ import {
   mergeProspects,
   normalizeNameCompany,
 } from './discoveryEngine';
+import { logStructured } from './discoveryLogger';
 import { githubScraper } from './githubScraper';
 import { googleSearchScraper } from './googleSearchScraper';
 import { isSourceAvailable, recordFailure, recordSuccess } from './healthMonitor';
@@ -302,13 +342,14 @@ describe('discoveryEngine', () => {
       vi.mocked(mapsScraper.isEnabled).mockReturnValue(false);
       vi.mocked(apolloAdapter.isEnabled).mockReturnValue(false);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const result = await discoverLeads(mockIcp);
       expect(result).toEqual([]);
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('All discovery sources are disabled'),
+      expect(logStructured).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('All discovery sources are disabled'),
+        }),
       );
-      consoleSpy.mockRestore();
     });
 
     it('calls shuffleAdapterOrder for anti-detection', async () => {

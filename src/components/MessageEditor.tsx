@@ -23,9 +23,11 @@ const MESSAGE_TYPES: { value: MessageType; label: string }[] = [
 ];
 
 const TONE_OPTIONS: { value: TonePreference; label: string }[] = [
+  { value: 'warm', label: 'Warm' },
   { value: 'professional', label: 'Professional' },
   { value: 'casual', label: 'Casual' },
   { value: 'direct', label: 'Direct' },
+  { value: 'bold', label: 'Bold' },
 ];
 
 export default function MessageEditor({ leadId: initialLeadId }: { leadId: string }) {
@@ -34,7 +36,7 @@ export default function MessageEditor({ leadId: initialLeadId }: { leadId: strin
   const [leads, setLeads] = useState<Pick<Lead, 'id' | 'name' | 'company'>[]>([]);
   const [loadingLeads, setLoadingLeads] = useState(!initialLeadId);
   const [messageType, setMessageType] = useState<MessageType>('cold_email');
-  const [tone, setTone] = useState<TonePreference>('professional');
+  const [tone, setTone] = useState<TonePreference>('warm');
   const [productContext, setProductContext] = useState('');
   const [message, setMessage] = useState('');
   const [personalizationDetails, setPersonalizationDetails] = useState<string[]>([]);

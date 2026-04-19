@@ -1,8 +1,10 @@
 import { dbWriteError, validationError } from '@/lib/apiErrors';
 import { getSession } from '@/lib/auth';
 import { researchAndGenerate } from '@/services/autoResearchOrchestrator';
+import { getProviderConnectionStatus } from '@/services/emailTransportService';
 import { getProjectById } from '@/services/icpProjectService';
 import { getEnrichedICP } from '@/services/icpService';
+import { getCallNotes } from '@/services/insightService';
 import { getLeadById } from '@/services/leadService';
 import {
   generateEnhancedMessage,
@@ -12,7 +14,7 @@ import {
 import { buildPersonalizationContext } from '@/services/personalizationContextBuilder';
 import { getPipelineConfig } from '@/services/pipelineConfigService';
 import { getResearchProfile } from '@/services/prospectResearcherService';
-import type { ApiError, EnrichedICP, MessageRequest, ResearchProfile } from '@/types';
+import type { ApiError, CallNote, EnrichedICP, MessageRequest, ResearchProfile } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
@@ -47,8 +49,8 @@ export async function POST(request: NextRequest) {
       messageType: 'invalid',
     });
   }
-  if (!body.tone || !['professional', 'casual', 'direct'].includes(body.tone)) {
-    return validationError('tone must be "professional", "casual", or "direct"', {
+  if (!body.tone || !['warm', 'professional', 'casual', 'direct', 'bold'].includes(body.tone)) {
+    return validationError('tone must be "warm", "professional", "casual", "direct", or "bold"', {
       tone: 'invalid',
     });
   }
@@ -67,6 +69,7 @@ export async function POST(request: NextRequest) {
 
   // Resolve productContext: body > lead's project description > pipeline_config fallback
   let productContext = body.productContext?.trim() || '';
+  let globalSteering = '';
   if (!productContext && lead.projectId) {
     try {
       const project = await getProjectById(lead.projectId);
@@ -77,11 +80,14 @@ export async function POST(request: NextRequest) {
       // Fall through to pipeline_config fallback
     }
   }
-  if (!productContext) {
+  if (!productContext || !globalSteering) {
     try {
       const config = await getPipelineConfig(session.founderId);
-      if (config.productContext) {
+      if (!productContext && config.productContext) {
         productContext = config.productContext;
+      }
+      if (config.globalSteering) {
+        globalSteering = config.globalSteering;
       }
     } catch {
       // No fallback available
@@ -89,6 +95,32 @@ export async function POST(request: NextRequest) {
   }
   if (!productContext) {
     return validationError('productContext is required', { productContext: 'missing' });
+  }
+
+  // Load per-lead steering context from the lead record
+  const steeringContext = lead.steeringContext || '';
+
+  // Load call notes for the lead
+  let callNotes: CallNote[] = [];
+  try {
+    callNotes = await getCallNotes(lead.id);
+  } catch {
+    // Continue without call notes — log warning in production
+  }
+
+  // --- Fetch sender name and signature from email settings ---
+  let senderName: string | undefined;
+  let emailSignature: string | undefined;
+  try {
+    const emailStatus = await getProviderConnectionStatus(session.founderId);
+    if (emailStatus.sendingName) {
+      senderName = emailStatus.sendingName;
+    }
+    if (emailStatus.emailSignature) {
+      emailSignature = emailStatus.emailSignature;
+    }
+  } catch {
+    // No email settings — sender name/signature will be omitted
   }
 
   // --- Attempt enriched personalization path ---
@@ -114,7 +146,7 @@ export async function POST(request: NextRequest) {
     // If no Research Profile, trigger auto-research via the orchestrator
     if (!researchProfile) {
       try {
-        const result = await researchAndGenerate(lead, body, enrichedICP);
+        const result = await researchAndGenerate(lead, body, enrichedICP, undefined, senderName);
         return NextResponse.json(result.message);
       } catch {
         // Auto-research failed entirely — fall through to enriched or basic generation
@@ -139,6 +171,11 @@ export async function POST(request: NextRequest) {
           tone: body.tone,
           productContext,
           personalizationContext,
+          senderName,
+          emailSignature,
+          globalSteering,
+          steeringContext,
+          callNotes,
         });
 
         return NextResponse.json(result);
@@ -166,6 +203,12 @@ export async function POST(request: NextRequest) {
     messageType: body.messageType,
     tone: body.tone,
     productContext,
+    senderName,
+    emailSignature,
+    painPoints: enrichedICP?.painPointsSolved,
+    globalSteering,
+    steeringContext,
+    callNotes,
   };
 
   try {

@@ -47,6 +47,7 @@ vi.mock('@/services/bookingAgentService', () => ({
 }));
 vi.mock('@/services/messageService', () => ({
   generateMessage: vi.fn(),
+  generateMessageWithResearchFallback: vi.fn(),
 }));
 vi.mock('@/services/outreachService', () => ({
   getOutreachHistory: vi.fn().mockResolvedValue([]),
@@ -73,6 +74,21 @@ vi.mock('@/services/correlationEngineService', () => ({
 vi.mock('@/services/prospectResearcherService', () => ({
   getResearchProfile: vi.fn().mockResolvedValue(null),
 }));
+vi.mock('@/services/discovery/discoveryLogger', () => ({
+  logStructured: vi.fn(),
+  logPipelineRunSummary: vi.fn(),
+  logDiscoverySummary: vi.fn(),
+  logEnrichmentSummary: vi.fn(),
+}));
+vi.mock('@/services/discovery/enrichmentPipeline', () => ({
+  enrichProspect: vi.fn().mockResolvedValue({ enrichmentData: {}, enrichmentStatus: 'pending' }),
+  mergeEnrichmentWithExisting: vi
+    .fn()
+    .mockImplementation((existing, newData) => ({ ...existing, ...newData })),
+}));
+vi.mock('@/services/discovery/runCache', () => ({
+  createRunCache: vi.fn().mockReturnValue({}),
+}));
 
 import { query } from '@/lib/db';
 import { discoverLeadsMultiICP } from '@/services/discovery/discoveryEngine';
@@ -94,6 +110,7 @@ const mockedFindDuplicate = vi.mocked(findDuplicate);
 const mockedUpdateLeadEnrichment = vi.mocked(updateLeadEnrichment);
 
 const FOUNDER_ID = 'f-1';
+const PROJECT_ID = 'proj-1';
 
 const defaultConfig = {
   founderId: FOUNDER_ID,
@@ -134,17 +151,37 @@ function runRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'run-1',
     founder_id: FOUNDER_ID,
+    project_id: PROJECT_ID,
     status: 'completed',
-    stages_completed: ['discovery', 'outreach', 'follow_up', 'inbox', 'booking'],
+    stages_completed: [
+      'enrichment_retry',
+      'discovery',
+      'outreach',
+      'follow_up',
+      'inbox',
+      'booking',
+    ],
     stage_errors: {},
     prospects_discovered: 0,
     messages_sent: 0,
     replies_processed: 0,
     meetings_booked: 0,
+    enrichments_retried: 0,
     started_at: new Date(),
     completed_at: new Date(),
     ...overrides,
   };
+}
+
+/**
+ * Helper: prepend the standard stale-run-check + INSERT + enrichment_retry queries
+ * that executePipelineRun now issues before reaching the discovery stage.
+ */
+function prependPipelineSetupMocks() {
+  mockedQuery
+    .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
+    .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+    .mockResolvedValueOnce(dbResult([])); // enrichment_retry: SELECT leads (none eligible)
 }
 
 beforeEach(() => {
@@ -181,8 +218,8 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
     });
     mockedCreateLead.mockResolvedValue({ id: 'lead-1', name: 'A', company: 'Co1' } as any);
 
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // SELECT count (daily cap)
       .mockResolvedValueOnce(dbResult([])) // UPDATE lead discovery_source
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
@@ -193,9 +230,9 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 1 })])); // UPDATE pipeline_run
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
-    expect(mockedGetActiveProfiles).toHaveBeenCalledWith(FOUNDER_ID);
+    expect(mockedGetActiveProfiles).toHaveBeenCalledWith(FOUNDER_ID, PROJECT_ID);
     expect(mockedDiscoverLeadsMultiICP).toHaveBeenCalledWith([defaultProfile], 50);
     expect(mockedCalculateLeadScoreV2).toHaveBeenCalled();
     expect(mockedCreateLead).toHaveBeenCalledTimes(1);
@@ -240,8 +277,8 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
     });
     mockedCreateLead.mockResolvedValue({ id: 'lead-2', name: 'New', company: 'Co2' } as any);
 
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
       .mockResolvedValueOnce(dbResult([{ count: '0' }]))
       .mockResolvedValueOnce(dbResult([])) // UPDATE discovery_source for New
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
@@ -252,7 +289,7 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 1 })]));
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     expect(mockedFindDuplicate).toHaveBeenCalledTimes(2);
     expect(mockedCreateLead).toHaveBeenCalledTimes(1);
@@ -280,8 +317,8 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       breakdown: { icpMatch: 10, roleRelevance: 10, intentSignals: 5, painPointRelevance: 5 },
     });
 
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
       .mockResolvedValueOnce(dbResult([{ count: '0' }]))
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
@@ -291,15 +328,15 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 0 })]));
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     expect(mockedCreateLead).not.toHaveBeenCalled();
     expect(result.prospectsDiscovered).toBe(0);
   });
 
   it('returns 0 prospects when daily cap is already reached', async () => {
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
       .mockResolvedValueOnce(dbResult([{ count: '50' }])) // Cap already reached
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
@@ -309,7 +346,7 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 0 })]));
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     expect(mockedCreateLead).not.toHaveBeenCalled();
     expect(result.prospectsDiscovered).toBe(0);
@@ -337,8 +374,8 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
     });
     mockedCreateLead.mockResolvedValue({ id: 'lead-1', name: 'A', company: 'Co1' } as any);
 
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
       .mockResolvedValueOnce(dbResult([{ count: '0' }]))
       .mockResolvedValueOnce(dbResult([])) // UPDATE discovery_source
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
@@ -349,20 +386,22 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 1 })]));
 
-    await executePipelineRun(FOUNDER_ID);
+    await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
-    // 3rd query call = UPDATE lead SET discovery_source
-    const updateCall = mockedQuery.mock.calls[2];
-    expect(updateCall[0]).toContain('discovery_source');
-    expect(updateCall[0]).toContain('discovered_at');
-    expect(updateCall[1]).toEqual(['icp_discovery', 'lead-1']);
+    // Find the UPDATE lead SET discovery_source query call
+    const updateCall = mockedQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('discovery_source'),
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).toContain('discovered_at');
+    expect(updateCall![1]).toEqual(['icp_discovery', 'lead-1']);
   });
 
   it('skips discovery stage with warning when no active profiles exist', async () => {
     mockedGetActiveProfiles.mockResolvedValue([]);
 
+    prependPipelineSetupMocks();
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
       .mockResolvedValueOnce(dbResult([])) // outreach stage: SELECT leads (empty)
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
       .mockResolvedValueOnce(dbResult([])) // booking: SELECT replied leads (empty)
@@ -371,7 +410,7 @@ describe('executeDiscoveryStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ prospects_discovered: 0 })]));
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     // Discovery stage should complete successfully with 0 prospects (not throw)
     expect(result.stagesCompleted).toContain('discovery');

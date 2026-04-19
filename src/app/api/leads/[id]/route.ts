@@ -56,6 +56,11 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     return validationError('Invalid JSON body');
   }
 
+  // Validate steeringContext length
+  if (body.steeringContext !== undefined && body.steeringContext.length > 1000) {
+    return validationError('steeringContext must be 1000 characters or fewer');
+  }
+
   try {
     const lead = await getLeadById(id);
     if (!lead || lead.founderId !== session.founderId) {

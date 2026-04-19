@@ -150,6 +150,9 @@ export default function ConversationView() {
                       <div className="flex flex-col items-start gap-0.5">
                         <span className="font-medium text-sm">{thread.leadName}</span>
                         <span className="text-xs text-muted-foreground">{thread.company}</span>
+                        {thread.email && (
+                          <span className="text-xs text-muted-foreground">{thread.email}</span>
+                        )}
                         <span className="text-xs text-muted-foreground">
                           {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''}
                         </span>
@@ -176,6 +179,9 @@ export default function ConversationView() {
                 <div>
                   <h3 className="text-lg font-semibold">{selectedThread.leadName}</h3>
                   <p className="text-sm text-muted-foreground">{selectedThread.company}</p>
+                  {selectedThread.email && (
+                    <p className="text-sm text-muted-foreground">📧 {selectedThread.email}</p>
+                  )}
                 </div>
                 {selectedThread.messages.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No messages in this thread.</p>
@@ -192,6 +198,16 @@ export default function ConversationView() {
                           <Badge variant={msg.direction === 'outbound' ? 'secondary' : 'outline'}>
                             {msg.direction === 'outbound' ? 'Sent' : 'Received'}
                           </Badge>
+                          {msg.channel && (
+                            <Badge variant="outline" className="text-xs">
+                              {msg.channel === 'email' ? '✉ Email' : '💬 DM'}
+                            </Badge>
+                          )}
+                          {msg.isFollowUp && (
+                            <Badge variant="outline" className="text-xs">
+                              Follow-up
+                            </Badge>
+                          )}
                           <span className="text-xs text-muted-foreground">
                             {formatTimestamp(msg.timestamp)}
                           </span>

@@ -3,12 +3,18 @@ import { handleDecline, handleProposalExpiry, proposeSlots } from '@/services/bo
 import { scoreAndStoreCorrelation } from '@/services/correlationEngineService';
 import { changeLeadStatus } from '@/services/crmService';
 import { discoverLeadsMultiICP } from '@/services/discovery/discoveryEngine';
+import { logPipelineRunSummary, logStructured } from '@/services/discovery/discoveryLogger';
+import {
+  enrichProspect,
+  mergeEnrichmentWithExisting,
+} from '@/services/discovery/enrichmentPipeline';
+import { createRunCache } from '@/services/discovery/runCache';
 import { getEmailConnection, pollInbox, sendEmail } from '@/services/emailIntegrationService';
 import { enrichLead } from '@/services/enrichmentService';
-import { getActiveProfiles } from '@/services/icpProfileService';
+import { getActiveProfiles, getICPProfileById } from '@/services/icpProfileService';
 import { getEnrichedICP } from '@/services/icpService';
 import { createLead, findDuplicate, updateLeadEnrichment } from '@/services/leadService';
-import { generateMessage } from '@/services/messageService';
+import { generateMessage, generateMessageWithResearchFallback } from '@/services/messageService';
 import { getOutreachHistory, recordOutreach } from '@/services/outreachService';
 import { getPipelineConfig } from '@/services/pipelineConfigService';
 import { getResearchProfile } from '@/services/prospectResearcherService';
@@ -33,6 +39,7 @@ interface PipelineRunRow {
   id: string;
   founder_id: string;
   project_id: string | null;
+  icp_profile_id: string | null;
   status: 'running' | 'completed' | 'failed' | 'partial';
   stages_completed: string[];
   stage_errors: Record<string, string>;
@@ -40,19 +47,21 @@ interface PipelineRunRow {
   messages_sent: number;
   replies_processed: number;
   meetings_booked: number;
+  enrichments_retried: number;
   started_at: Date;
   completed_at: Date | null;
 }
 
-const PIPELINE_RUN_COLUMNS = `id, founder_id, project_id, status, stages_completed, stage_errors,
+const PIPELINE_RUN_COLUMNS = `id, founder_id, project_id, icp_profile_id, status, stages_completed, stage_errors,
   prospects_discovered, messages_sent, replies_processed, meetings_booked,
-  started_at, completed_at`;
+  enrichments_retried, started_at, completed_at`;
 
 function mapRunRow(row: PipelineRunRow): PipelineRun {
   return {
     id: row.id,
     founderId: row.founder_id,
     projectId: row.project_id ?? undefined,
+    icpProfileId: row.icp_profile_id ?? undefined,
     status: row.status,
     stagesCompleted: row.stages_completed,
     stageErrors: row.stage_errors,
@@ -60,9 +69,51 @@ function mapRunRow(row: PipelineRunRow): PipelineRun {
     messagesSent: row.messages_sent,
     repliesProcessed: row.replies_processed,
     meetingsBooked: row.meetings_booked,
+    enrichmentsRetried: row.enrichments_retried,
     startedAt: row.started_at,
     completedAt: row.completed_at ?? undefined,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stuck Pipeline Cleanup
+// ---------------------------------------------------------------------------
+
+/** Max age in minutes before a "running" pipeline is considered stuck */
+const STUCK_RUN_THRESHOLD_MINUTES = 10;
+
+/**
+ * Mark any pipeline runs that have been in "running" status for longer than
+ * the threshold as "failed". This prevents stuck runs from blocking new ones.
+ * Safe to call on every application start and periodically during runtime.
+ */
+export async function cleanupStuckPipelineRuns(): Promise<number> {
+  try {
+    const result = await query<{ id: string }>(
+      `UPDATE pipeline_run
+       SET status = 'failed',
+           stage_errors = COALESCE(stage_errors, '{}'::jsonb) || '{"_cleanup": "stuck_run_auto_recovered"}'::jsonb,
+           completed_at = NOW()
+       WHERE status = 'running'
+         AND started_at < NOW() - INTERVAL '${STUCK_RUN_THRESHOLD_MINUTES} minutes'
+       RETURNING id`,
+      [],
+    );
+
+    if (result.rows.length > 0) {
+      console.log(
+        `[PipelineCleanup] Recovered ${result.rows.length} stuck pipeline run(s): ${result.rows.map((r) => r.id).join(', ')}`,
+      );
+    }
+
+    return result.rows.length;
+  } catch (err) {
+    console.error(
+      '[PipelineCleanup] Failed to clean up stuck runs:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +125,7 @@ export interface StageResult {
   messagesSent?: number;
   repliesProcessed?: number;
   meetingsBooked?: number;
+  enrichmentsRetried?: number;
 }
 
 /**
@@ -88,15 +140,41 @@ export interface StageResult {
  *
  * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6
  */
-async function executeDiscoveryStage(founderId: string, projectId: string): Promise<StageResult> {
+async function executeDiscoveryStage(
+  founderId: string,
+  projectId: string,
+  icpProfileId?: string,
+): Promise<StageResult> {
   const config = await getPipelineConfig(founderId);
 
-  // Fetch only active ICP profiles for the specified project
-  const activeProfiles = await getActiveProfiles(founderId, projectId);
+  let activeProfiles;
+
+  if (icpProfileId) {
+    // Single-profile run: use only the specified profile (Req 4.2)
+    const profile = await getICPProfileById(icpProfileId);
+    if (!profile || !profile.isActive) {
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'warn',
+        message: 'Specified ICP profile is inactive or not found. Skipping discovery stage.',
+        metadata: { founderId, projectId, icpProfileId },
+      });
+      return { prospectsDiscovered: 0 };
+    }
+    activeProfiles = [profile];
+  } else {
+    // All-profiles run: fetch all active ICP profiles for the project
+    activeProfiles = await getActiveProfiles(founderId, projectId);
+  }
   if (activeProfiles.length === 0) {
-    console.warn(
-      '[PipelineOrchestrator] No active ICP profiles for founder/project. Skipping discovery stage.',
-    );
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'warn',
+      message: 'No active ICP profiles for founder/project. Skipping discovery stage.',
+      metadata: { founderId, projectId },
+    });
     return { prospectsDiscovered: 0 };
   }
 
@@ -127,18 +205,30 @@ async function executeDiscoveryStage(founderId: string, projectId: string): Prom
     // Skip duplicates by name and company
     const duplicate = await findDuplicate(founderId, prospect.name, prospect.company);
     if (duplicate) {
-      console.log(
-        `[PipelineOrchestrator] Skipping duplicate: "${prospect.name}" (${prospect.company})`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Skipping duplicate: "${prospect.name}" (${prospect.company})`,
+        metadata: { prospectName: prospect.name, company: prospect.company },
+      });
       continue;
     }
 
     // The prospect already has a score from discoverLeadsMultiICP
     // But we filter by minimum score threshold
     if (prospect.score < config.minLeadScore) {
-      console.log(
-        `[PipelineOrchestrator] Skipping low score: "${prospect.name}" score=${prospect.score} < min=${config.minLeadScore}`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Skipping low score: "${prospect.name}" score=${prospect.score} < min=${config.minLeadScore}`,
+        metadata: {
+          prospectName: prospect.name,
+          score: prospect.score,
+          minLeadScore: config.minLeadScore,
+        },
+      });
       continue;
     }
 
@@ -175,14 +265,26 @@ async function executeDiscoveryStage(founderId: string, projectId: string): Prom
         scoreResult.totalScore,
         scoreResult.breakdown,
       );
-      console.log(
-        `[PipelineOrchestrator] Created lead: "${lead.name}" (${lead.company}) score=${lead.leadScore}`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Created lead: "${lead.name}" (${lead.company}) score=${lead.leadScore}`,
+        leadId: lead.id,
+        metadata: { leadName: lead.name, company: lead.company, score: lead.leadScore },
+      });
     } catch (err) {
-      console.error(
-        `[PipelineOrchestrator] Failed to create lead "${prospect.name}":`,
-        err instanceof Error ? err.message : String(err),
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'error',
+        message: `Failed to create lead "${prospect.name}": ${err instanceof Error ? err.message : String(err)}`,
+        metadata: {
+          prospectName: prospect.name,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        retryEligible: false,
+      });
       continue;
     }
 
@@ -199,6 +301,8 @@ async function executeDiscoveryStage(founderId: string, projectId: string): Prom
       enrichResult.enrichmentData,
       enrichResult.enrichmentStatus,
       originatingProfile,
+      enrichResult.emailDiscoveryMethod,
+      enrichResult.emailDiscoverySteps,
     );
 
     // Trigger correlation scoring after enrichment completes (Req 3.1)
@@ -219,16 +323,219 @@ async function executeDiscoveryStage(founderId: string, projectId: string): Prom
         await scoreAndStoreCorrelation(lead, researchProfile, enrichedICP);
       }
     } catch (error) {
-      console.error(
-        `[PipelineOrchestrator] Correlation scoring failed for lead "${lead.name}":`,
-        error instanceof Error ? error.message : String(error),
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'error',
+        message: `Correlation scoring failed for lead "${lead.name}": ${error instanceof Error ? error.message : String(error)}`,
+        leadId: lead.id,
+        metadata: {
+          leadName: lead.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        retryEligible: true,
+      });
     }
 
     added++;
   }
 
   return { prospectsDiscovered: added };
+}
+
+/**
+ * Calculate the retry backoff delay in minutes for a given attempt number.
+ * Returns the backoff minutes for attempts 0–2, or null for attempt ≥ 3
+ * (indicating no more retries should be scheduled).
+ *
+ * Exported as a pure function for property testing.
+ *
+ * Requirements: 5.2 (Property 10)
+ */
+export function calculateRetryBackoff(attempt: number): number | null {
+  const backoffSchedule = [1, 5, 25];
+  return attempt < backoffSchedule.length ? backoffSchedule[attempt] : null;
+}
+
+/**
+ * Execute the enrichment retry stage of a pipeline run.
+ *
+ * - Queries leads with enrichment_status = 'pending' or 'partial',
+ *   enrichment_retry_count < 3, and enrichment_next_retry_at <= NOW()
+ * - For each lead, re-runs the enrichment pipeline (skipping disabled adapters)
+ * - Merges new data with existing partial data
+ * - On success: updates enrichment data, sets status to 'complete' or 'partial'
+ * - On failure: increments retry count, calculates next retry with exponential backoff
+ * - On max retries exceeded (≥ 3): marks as permanently failed
+ * - Logs each retry attempt with lead ID, attempt number, sources attempted, outcome
+ *
+ * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+ */
+async function executeEnrichmentRetryStage(
+  founderId: string,
+  projectId: string,
+): Promise<StageResult> {
+  // Query leads eligible for enrichment retry
+  const leadsResult = await query<{
+    id: string;
+    name: string;
+    company: string;
+    role: string;
+    enrichment_data: EnrichmentData | null;
+    enrichment_status: string;
+    enrichment_retry_count: number;
+    icp_profile_id: string | null;
+    linkedin_url: string | null;
+    email: string | null;
+  }>(
+    `SELECT id, name, company, role, enrichment_data, enrichment_status,
+            enrichment_retry_count, icp_profile_id,
+            (enrichment_data->>'linkedinUrl')::text AS linkedin_url,
+            email
+     FROM lead
+     WHERE founder_id = $1
+       AND project_id = $2
+       AND is_deleted = false
+       AND (enrichment_status = 'pending' OR enrichment_status = 'partial')
+       AND enrichment_retry_count < 3
+       AND (enrichment_next_retry_at IS NULL OR enrichment_next_retry_at <= NOW())
+       AND updated_at > NOW() - INTERVAL '7 days'
+     ORDER BY enrichment_retry_count ASC, updated_at ASC
+     LIMIT 10`,
+    [founderId, projectId],
+  );
+
+  if (leadsResult.rows.length === 0) {
+    return { enrichmentsRetried: 0 };
+  }
+
+  const cache = createRunCache();
+  let enrichmentsRetried = 0;
+
+  for (const lead of leadsResult.rows) {
+    const attempt = lead.enrichment_retry_count;
+
+    // Build prospect context for enrichment pipeline
+    const prospect = {
+      name: lead.name,
+      company: lead.company,
+      role: lead.role,
+      linkedinUrl: lead.linkedin_url ?? undefined,
+      companyDomain: undefined,
+    };
+
+    let outcome: 'success' | 'failure' | 'partial' = 'failure';
+    let sourcesAttempted: string[] = [];
+    let errorMessage: string | undefined;
+
+    try {
+      // Re-run enrichment pipeline (enrichProspect already skips disabled health-state adapters)
+      const enrichResult = await enrichProspect(prospect, cache);
+
+      sourcesAttempted = enrichResult.enrichmentData.dataSources ?? [];
+
+      if (
+        enrichResult.enrichmentStatus === 'complete' ||
+        enrichResult.enrichmentStatus === 'partial'
+      ) {
+        // Merge new data with existing partial data
+        const existingData = lead.enrichment_data ?? {};
+        const mergedData = mergeEnrichmentWithExisting(existingData, enrichResult.enrichmentData);
+
+        // Determine final status
+        const finalStatus = enrichResult.enrichmentStatus;
+        outcome = finalStatus === 'complete' ? 'success' : 'partial';
+
+        // Look up the ICP profile for re-scoring
+        if (lead.icp_profile_id) {
+          const icpProfile = await getICPProfileById(lead.icp_profile_id);
+          if (icpProfile) {
+            await updateLeadEnrichment(
+              lead.id,
+              mergedData as EnrichmentData,
+              finalStatus,
+              icpProfile,
+              enrichResult.emailDiscoveryMethod,
+              enrichResult.emailDiscoverySteps,
+            );
+          }
+        }
+
+        // Clear retry tracking on success
+        await query(
+          `UPDATE lead
+           SET enrichment_retry_count = $1,
+               enrichment_next_retry_at = NULL,
+               enrichment_last_error = NULL
+           WHERE id = $2`,
+          [attempt + 1, lead.id],
+        );
+      } else {
+        // enrichment returned 'pending' — all adapters failed
+        outcome = 'failure';
+        errorMessage = 'All enrichment sources failed';
+        await handleRetryFailure(lead.id, attempt, errorMessage);
+      }
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      outcome = 'failure';
+      await handleRetryFailure(lead.id, attempt, errorMessage);
+    }
+
+    // Log each retry attempt (Req 5.5)
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'enrichment_retry',
+      level: outcome === 'failure' ? 'error' : 'info',
+      message: `Enrichment retry attempt ${attempt + 1} for lead`,
+      leadId: lead.id,
+      metadata: {
+        attempt: attempt + 1,
+        sourcesAttempted,
+        outcome,
+        error: errorMessage,
+      },
+    });
+
+    enrichmentsRetried++;
+  }
+
+  return { enrichmentsRetried };
+}
+
+/**
+ * Handle enrichment retry failure: increment retry count, calculate backoff,
+ * or mark as permanently failed if max retries exceeded.
+ */
+async function handleRetryFailure(
+  leadId: string,
+  currentAttempt: number,
+  errorMessage: string,
+): Promise<void> {
+  const nextAttempt = currentAttempt + 1;
+  const backoffMinutes = calculateRetryBackoff(nextAttempt);
+
+  if (backoffMinutes === null) {
+    // Max retries exceeded (≥ 3) — mark as permanently failed
+    await query(
+      `UPDATE lead
+       SET enrichment_retry_count = $1,
+           enrichment_next_retry_at = NULL,
+           enrichment_last_error = $2
+       WHERE id = $3`,
+      [nextAttempt, `Permanently failed after ${nextAttempt} attempts: ${errorMessage}`, leadId],
+    );
+  } else {
+    // Schedule next retry with exponential backoff
+    await query(
+      `UPDATE lead
+       SET enrichment_retry_count = $1,
+           enrichment_next_retry_at = NOW() + ($2 || ' minutes')::INTERVAL,
+           enrichment_last_error = $3
+       WHERE id = $4`,
+      [nextAttempt, String(backoffMinutes), errorMessage, leadId],
+    );
+  }
 }
 
 /**
@@ -307,21 +614,37 @@ async function executeOutreachStage(founderId: string): Promise<StageResult> {
     // Get outreach history for duplicate check
     const outreachHistory = await getOutreachHistory(lead.id);
 
-    // Generate personalized message using strategy inputs
+    // Generate personalized message using strategy inputs with research fallback
     const strategyPrompt = formatStrategyForPrompt(strategy);
     let messageResponse;
     try {
-      messageResponse = await generateMessage({
-        leadName: lead.name,
-        leadRole: lead.role,
-        leadCompany: lead.company,
-        enrichmentData: lead.enrichment_data ?? undefined,
-        messageType: 'cold_email',
-        tone: strategy.tonePreference,
-        productContext: strategyPrompt,
+      messageResponse = await generateMessageWithResearchFallback(
+        {
+          leadName: lead.name,
+          leadRole: lead.role,
+          leadCompany: lead.company,
+          enrichmentData: lead.enrichment_data ?? undefined,
+          messageType: 'cold_email',
+          tone: strategy.tonePreference,
+          productContext: strategyPrompt,
+        },
+        lead.id,
+      );
+    } catch (err) {
+      // Message generation failed — log structured error, skip lead, continue (Req 6.1, 6.3, 7.2)
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'outreach',
+        level: 'error',
+        message: `Message generation failed for lead "${lead.name}": ${err instanceof Error ? err.message : String(err)}`,
+        leadId: lead.id,
+        metadata: {
+          leadName: lead.name,
+          company: lead.company,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        retryEligible: true,
       });
-    } catch {
-      // Message generation failed — skip this lead, retry next run
       continue;
     }
 
@@ -349,7 +672,8 @@ async function executeOutreachStage(founderId: string): Promise<StageResult> {
       const sendResult = await sendEmail(
         founderId,
         lead.email,
-        `Introduction from ${strategy.productContext ? 'our team' : 'SignalFlow'}`,
+        messageResponse.subjectLine ||
+          `${lead.name.split(/\s+/)[0]} + ${lead.company || 'quick question'}`,
         messageResponse.message,
       );
       gmailThreadId = sendResult.gmailThreadId;
@@ -839,7 +1163,13 @@ export async function setPipelineState(
       [state, error ?? null, fid],
     );
   } catch (err) {
-    console.error('[PipelineOrchestrator] Failed to persist pipeline state:', err);
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'pipeline',
+      level: 'error',
+      message: `Failed to persist pipeline state: ${err instanceof Error ? err.message : String(err)}`,
+      metadata: { state, error: err instanceof Error ? err.message : String(err) },
+    });
   }
 }
 
@@ -863,13 +1193,21 @@ export async function getLastError(founderId?: string): Promise<string | undefin
 // Stage definitions
 // ---------------------------------------------------------------------------
 
-const STAGES = ['discovery', 'outreach', 'follow_up', 'inbox', 'booking'] as const;
+const STAGES = [
+  'enrichment_retry',
+  'discovery',
+  'outreach',
+  'follow_up',
+  'inbox',
+  'booking',
+] as const;
 type StageName = (typeof STAGES)[number];
 
 const STAGE_EXECUTORS: Record<
   StageName,
-  (founderId: string, projectId: string) => Promise<StageResult>
+  (founderId: string, projectId: string, icpProfileId?: string) => Promise<StageResult>
 > = {
+  enrichment_retry: executeEnrichmentRetryStage,
   discovery: executeDiscoveryStage,
   outreach: (founderId) => executeOutreachStage(founderId),
   follow_up: (founderId) => executeFollowUpStage(founderId),
@@ -886,18 +1224,70 @@ const STAGE_EXECUTORS: Record<
  * Creates a pipeline_run record, executes stages sequentially,
  * catches per-stage errors, and updates the run record.
  *
- * Requirements: 1.2, 1.3, 1.4
+ * When `icpProfileId` is provided, validates the profile exists, is active,
+ * and belongs to the project, then scopes discovery to that single profile.
+ * When omitted, all active profiles are used (existing behavior).
+ *
+ * Requirements: 1.2, 1.3, 1.4, 4.1, 4.2, 4.3, 4.4, 4.5
  */
 export async function executePipelineRun(
   founderId: string,
   projectId: string,
+  icpProfileId?: string,
 ): Promise<PipelineRun> {
-  // Create pipeline_run record with project_id
-  const insertResult = await query<PipelineRunRow>(
-    `INSERT INTO pipeline_run (founder_id, project_id, status, started_at)
-     VALUES ($1, $2, 'running', NOW())
-     RETURNING ${PIPELINE_RUN_COLUMNS}`,
+  // Validate icpProfileId when provided (Req 4.4)
+  if (icpProfileId) {
+    const profile = await getICPProfileById(icpProfileId);
+
+    if (!profile || !profile.isActive) {
+      throw Object.assign(new Error('ICP profile is inactive or does not exist'), {
+        statusCode: profile ? 400 : 404,
+        errorType: 'validation_error',
+      });
+    }
+
+    if (profile.projectId !== projectId) {
+      throw Object.assign(new Error('ICP profile does not belong to the specified project'), {
+        statusCode: 400,
+        errorType: 'validation_error',
+      });
+    }
+  }
+
+  // Detect and mark stale runs as failed (Req 7.6)
+  const staleRuns = await query<{ id: string }>(
+    `SELECT id FROM pipeline_run
+     WHERE founder_id = $1
+       AND project_id = $2
+       AND status = 'running'
+       AND started_at < NOW() - INTERVAL '5 minutes'`,
     [founderId, projectId],
+  );
+
+  for (const staleRun of staleRuns.rows) {
+    await query(
+      `UPDATE pipeline_run
+       SET status = 'failed',
+           stage_errors = COALESCE(stage_errors, '{}'::jsonb) || $1::jsonb,
+           completed_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify({ _stale: 'timeout_stale_run' }), staleRun.id],
+    );
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'pipeline',
+      level: 'warn',
+      message: `Marked stale pipeline run as failed`,
+      metadata: { staleRunId: staleRun.id, reason: 'timeout_stale_run' },
+    });
+  }
+
+  // Create pipeline_run record with project_id and optional icp_profile_id (Req 4.5)
+  const insertResult = await query<PipelineRunRow>(
+    `INSERT INTO pipeline_run (founder_id, project_id, icp_profile_id, status, started_at)
+     VALUES ($1, $2, $3, 'running', NOW())
+     RETURNING ${PIPELINE_RUN_COLUMNS}`,
+    [founderId, projectId, icpProfileId ?? null],
   );
   const runId = insertResult.rows[0].id;
 
@@ -907,18 +1297,28 @@ export async function executePipelineRun(
   let messagesSent = 0;
   let repliesProcessed = 0;
   let meetingsBooked = 0;
+  let enrichmentsRetried = 0;
 
   for (const stage of STAGES) {
     try {
-      const result = await STAGE_EXECUTORS[stage](founderId, projectId);
+      const result = await STAGE_EXECUTORS[stage](founderId, projectId, icpProfileId);
       stagesCompleted.push(stage);
       prospectsDiscovered += result.prospectsDiscovered ?? 0;
       messagesSent += result.messagesSent ?? 0;
       repliesProcessed += result.repliesProcessed ?? 0;
       meetingsBooked += result.meetingsBooked ?? 0;
+      enrichmentsRetried += result.enrichmentsRetried ?? 0;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       stageErrors[stage] = message;
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage,
+        level: 'error',
+        message: `Stage "${stage}" failed: ${message}`,
+        retryEligible: true,
+        metadata: { stageName: stage, error: message },
+      });
     }
   }
 
@@ -937,8 +1337,9 @@ export async function executePipelineRun(
          messages_sent = $5,
          replies_processed = $6,
          meetings_booked = $7,
+         enrichments_retried = $8,
          completed_at = NOW()
-     WHERE id = $8
+     WHERE id = $9
      RETURNING ${PIPELINE_RUN_COLUMNS}`,
     [
       finalStatus,
@@ -948,9 +1349,21 @@ export async function executePipelineRun(
       messagesSent,
       repliesProcessed,
       meetingsBooked,
+      enrichmentsRetried,
       runId,
     ],
   );
+
+  // Log structured pipeline run summary (Req 7.5, 10.5)
+  logPipelineRunSummary(runId, {
+    prospectsDiscovered,
+    enrichmentsCompleted: prospectsDiscovered,
+    enrichmentsRetried,
+    messagesSent,
+    messagesFailed: 0,
+    repliesProcessed,
+    meetingsBooked,
+  });
 
   if (finalStatus === 'failed') {
     await setPipelineState('error', 'All stages failed in last pipeline run', founderId);

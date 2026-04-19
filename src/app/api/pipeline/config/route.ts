@@ -45,6 +45,24 @@ export async function PUT(request: NextRequest) {
     return validationError('Invalid JSON body');
   }
 
+  // Validate globalSteering length
+  if (
+    body.globalSteering !== undefined &&
+    typeof body.globalSteering === 'string' &&
+    body.globalSteering.length > 2000
+  ) {
+    return validationError('globalSteering must be 2000 characters or fewer');
+  }
+
+  // Validate strategyScope value
+  if (
+    body.strategyScope !== undefined &&
+    body.strategyScope !== 'global' &&
+    body.strategyScope !== 'per_project'
+  ) {
+    return validationError('strategyScope must be "global" or "per_project"');
+  }
+
   const validation = validatePipelineConfig(body);
   if (!validation.valid) {
     return validationError('Pipeline configuration values out of allowed range', validation.errors);
@@ -71,6 +89,8 @@ export async function PUT(request: NextRequest) {
       productContext: body.productContext ?? current.productContext,
       valueProposition: body.valueProposition ?? current.valueProposition,
       targetPainPoints: body.targetPainPoints ?? current.targetPainPoints,
+      globalSteering: body.globalSteering ?? current.globalSteering,
+      strategyScope: body.strategyScope ?? current.strategyScope,
     };
 
     const config = await savePipelineConfig(merged);

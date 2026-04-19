@@ -65,42 +65,79 @@ export function mergeConversationThread(
 export async function getDailyMetrics(
   founderId: string,
   pipelineStatus: PipelineStatus,
+  icpProfileId?: string,
 ): Promise<PipelineMetrics> {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const todayISO = todayStart.toISOString();
 
   // Count leads discovered today directly from the lead table
-  const leadsResult = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM lead
-     WHERE founder_id = $1 AND is_deleted = false
-       AND created_at >= $2`,
-    [founderId, todayISO],
-  );
+  const leadsParams: unknown[] = [founderId, todayISO];
+  let leadsQuery =
+    'SELECT COUNT(*) AS count FROM lead' +
+    ' WHERE founder_id = $1 AND is_deleted = false AND created_at >= $2';
+  if (icpProfileId) {
+    leadsParams.push(icpProfileId);
+    leadsQuery += ' AND icp_profile_id = $' + leadsParams.length;
+  }
+  const leadsResult = await query<{ count: string }>(leadsQuery, leadsParams);
   const prospectsDiscoveredToday = parseInt(leadsResult.rows[0]?.count ?? '0', 10);
 
   // Count messages sent today from outreach_record
-  const messagesResult = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM outreach_record
-     WHERE founder_id = $1 AND outreach_date >= $2`,
-    [founderId, todayISO],
-  );
+  const messagesParams: unknown[] = [founderId, todayISO];
+  let messagesQuery: string;
+  if (icpProfileId) {
+    messagesParams.push(icpProfileId);
+    messagesQuery =
+      'SELECT COUNT(*) AS count FROM outreach_record' +
+      ' JOIN lead ON outreach_record.lead_id = lead.id' +
+      ' WHERE outreach_record.founder_id = $1 AND outreach_record.outreach_date >= $2' +
+      ' AND lead.icp_profile_id = $' +
+      messagesParams.length;
+  } else {
+    messagesQuery =
+      'SELECT COUNT(*) AS count FROM outreach_record' +
+      ' WHERE founder_id = $1 AND outreach_date >= $2';
+  }
+  const messagesResult = await query<{ count: string }>(messagesQuery, messagesParams);
   const messagesSentToday = parseInt(messagesResult.rows[0]?.count ?? '0', 10);
 
   // Count replies received today from incoming_reply
-  const repliesResult = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM incoming_reply
-     WHERE founder_id = $1 AND received_at >= $2`,
-    [founderId, todayISO],
-  );
+  const repliesParams: unknown[] = [founderId, todayISO];
+  let repliesQuery: string;
+  if (icpProfileId) {
+    repliesParams.push(icpProfileId);
+    repliesQuery =
+      'SELECT COUNT(*) AS count FROM incoming_reply' +
+      ' JOIN lead ON incoming_reply.lead_id = lead.id' +
+      ' WHERE incoming_reply.founder_id = $1 AND incoming_reply.received_at >= $2' +
+      ' AND lead.icp_profile_id = $' +
+      repliesParams.length;
+  } else {
+    repliesQuery =
+      'SELECT COUNT(*) AS count FROM incoming_reply' +
+      ' WHERE founder_id = $1 AND received_at >= $2';
+  }
+  const repliesResult = await query<{ count: string }>(repliesQuery, repliesParams);
   const repliesReceivedToday = parseInt(repliesResult.rows[0]?.count ?? '0', 10);
 
   // Count meetings booked today from calendar_event
-  const meetingsResult = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM calendar_event
-     WHERE founder_id = $1 AND created_at >= $2`,
-    [founderId, todayISO],
-  );
+  const meetingsParams: unknown[] = [founderId, todayISO];
+  let meetingsQuery: string;
+  if (icpProfileId) {
+    meetingsParams.push(icpProfileId);
+    meetingsQuery =
+      'SELECT COUNT(*) AS count FROM calendar_event' +
+      ' JOIN lead ON calendar_event.lead_id = lead.id' +
+      ' WHERE calendar_event.founder_id = $1 AND calendar_event.created_at >= $2' +
+      ' AND lead.icp_profile_id = $' +
+      meetingsParams.length;
+  } else {
+    meetingsQuery =
+      'SELECT COUNT(*) AS count FROM calendar_event' +
+      ' WHERE founder_id = $1 AND created_at >= $2';
+  }
+  const meetingsResult = await query<{ count: string }>(meetingsQuery, meetingsParams);
   const meetingsBookedToday = parseInt(meetingsResult.rows[0]?.count ?? '0', 10);
 
   const replyRatePercent =
@@ -121,7 +158,7 @@ export async function getDailyMetrics(
  */
 export async function getConversationThreads(founderId: string): Promise<ConversationThread[]> {
   const leads = await query(
-    `SELECT DISTINCT l.id, l.name, l.company
+    `SELECT DISTINCT l.id, l.name, l.company, l.email
      FROM lead l
      INNER JOIN outreach_record o ON o.lead_id = l.id
      WHERE l.founder_id = $1 AND l.is_deleted = false
@@ -137,6 +174,7 @@ export async function getConversationThreads(founderId: string): Promise<Convers
       leadId: lead.id,
       leadName: lead.name,
       company: lead.company,
+      email: lead.email ?? undefined,
       messages,
     });
   }
@@ -153,7 +191,7 @@ export async function getConversationThread(
 ): Promise<ConversationMessage[]> {
   // Outbound messages
   const outboundResult = await query(
-    `SELECT id, message_content, outreach_date
+    `SELECT id, message_content, outreach_date, channel, is_follow_up
      FROM outreach_record
      WHERE founder_id = $1 AND lead_id = $2
      ORDER BY outreach_date ASC`,
@@ -165,6 +203,8 @@ export async function getConversationThread(
     direction: 'outbound' as const,
     content: row.message_content,
     timestamp: new Date(row.outreach_date),
+    channel: row.channel ?? undefined,
+    isFollowUp: row.is_follow_up ?? false,
   }));
 
   // Inbound messages

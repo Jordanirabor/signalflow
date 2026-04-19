@@ -4,6 +4,8 @@
 // Free tier: 2,500 queries
 // ============================================================
 
+import type { RawSearchResult } from './aiResultParser';
+import { parseSearchResultsWithAI, validateLeadsAgainstICP } from './aiResultParser';
 import type { AnnotatedQuery, DiscoveredLeadData, ICP, SourceAdapter } from './types';
 
 // ---------------------------------------------------------------------------
@@ -85,7 +87,7 @@ export const serpApiSearchAdapter: SourceAdapter = {
     }
 
     const apiKey = process.env.SERPER_API_KEY!;
-    const leads: DiscoveredLeadData[] = [];
+    const allRawResults: RawSearchResult[] = [];
     const seenUrls = new Set<string>();
 
     console.log(`[SerpApiSearch] Starting discovery with ${queries.length} queries`);
@@ -117,45 +119,18 @@ export const serpApiSearchAdapter: SourceAdapter = {
           `[SerpApiSearch] Query "${annotatedQuery.query.slice(0, 60)}..." returned ${results.length} results`,
         );
 
+        // Deduplicate and collect raw results for AI parsing
         for (const result of results) {
           const normalizedUrl = result.link.toLowerCase().replace(/\/+$/, '');
           if (seenUrls.has(normalizedUrl)) continue;
           seenUrls.add(normalizedUrl);
 
-          const classification = classifyUrl(result.link);
-
-          if (classification === 'linkedin') {
-            const name = extractNameFromSnippet(result.snippet);
-            if (!name) continue;
-
-            // Extract headline from snippet — often contains "Role at Company"
-            let headline = '';
-            let company = '';
-            for (const sep of [' - ', ' – ', ' — ', ' | ']) {
-              const idx = result.snippet.indexOf(sep);
-              if (idx > 0) {
-                headline = result.snippet.slice(idx + sep.length).trim();
-                break;
-              }
-            }
-
-            // Try to extract company from "Role at Company" pattern in headline
-            const atMatch = headline.match(/\bat\s+(.+?)(?:\s*[·|–—-]|$)/i);
-            if (atMatch) {
-              company = atMatch[1].trim();
-            }
-
-            leads.push({
-              name,
-              role: headline || icp.targetRole,
-              company,
-              industry: icp.industry,
-              geography: icp.geography,
-              discoverySource: 'serp_api_search',
-              linkedinUrl: result.link,
-            });
-          }
-          // Directory URLs could be passed to directory scraper in the future
+          allRawResults.push({
+            title: result.title,
+            link: result.link,
+            snippet: result.snippet,
+            position: result.position,
+          });
         }
       } catch (error) {
         console.error(
@@ -164,6 +139,30 @@ export const serpApiSearchAdapter: SourceAdapter = {
         );
       }
     }
+
+    // Use AI parser to extract structured leads from raw results
+    const aiResult = await parseSearchResultsWithAI(allRawResults, icp);
+    console.log(
+      `[SerpApiSearch] AI parser extracted ${aiResult.leads.length} leads (method: ${aiResult.method})`,
+    );
+
+    // Validate parsed leads against ICP criteria
+    const validatedLeads = validateLeadsAgainstICP(aiResult.leads, icp);
+    console.log(
+      `[SerpApiSearch] ICP validation: ${validatedLeads.length}/${aiResult.leads.length} leads passed`,
+    );
+
+    // Convert ParsedLead[] to DiscoveredLeadData[]
+    const leads: DiscoveredLeadData[] = validatedLeads.map((parsed) => ({
+      name: parsed.name,
+      role: parsed.role,
+      company: parsed.company,
+      industry: icp.industry,
+      geography: icp.geography,
+      discoverySource: 'serp_api_search',
+      linkedinUrl: parsed.linkedinUrl,
+      companyDomain: parsed.companyDomain,
+    }));
 
     console.log(`[SerpApiSearch] Discovery complete: ${leads.length} leads`);
     return leads;

@@ -1,4 +1,8 @@
+import { getLeadById } from '@/services/leadService';
+import { buildPersonalizationContext } from '@/services/personalizationContextBuilder';
+import { getResearchProfile, researchProspect } from '@/services/prospectResearcherService';
 import type {
+  CallNote,
   ContentSummary,
   EnhancedMessageResponse,
   EnrichmentData,
@@ -6,9 +10,26 @@ import type {
   MessageType,
   PersonalizationContext,
   PersonalizationMetadata,
+  ResearchProfile,
   TonePreference,
 } from '@/types';
 import OpenAI from 'openai';
+import type { ExtendedEnrichmentData } from './discovery/types';
+
+// ---------------------------------------------------------------------------
+// Tone modifiers
+// ---------------------------------------------------------------------------
+
+export const TONE_MODIFIERS: Record<TonePreference, string> = {
+  warm: 'Write like a thoughtful person reaching out to someone whose work they genuinely respect. Warm, specific, human. Use contractions. Be personal but not sycophantic.',
+  professional:
+    'Write in a formal, business-appropriate tone. Use complete sentences without contractions. Be respectful and polished. Maintain professional distance while being personable.',
+  casual:
+    'Write like you are texting a peer. Keep it short, conversational, and relaxed. Use contractions freely. Skip formalities. Get to the point quickly.',
+  direct:
+    'Skip all pleasantries and small talk. Lead with the value proposition immediately. Be blunt and concise. Every sentence must deliver information or make an ask. No filler.',
+  bold: 'Write with confidence and a slight edge. Use pattern-interrupt techniques — open with a surprising observation or a provocative question. Be assertive, not aggressive. Challenge assumptions.',
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +44,12 @@ export interface GenerateMessageInput {
   tone: TonePreference;
   productContext: string;
   projectName?: string;
+  senderName?: string;
+  emailSignature?: string;
+  painPoints?: string[];
+  steeringContext?: string;
+  globalSteering?: string;
+  callNotes?: CallNote[];
 }
 
 export interface EnhancedGenerateMessageInput extends GenerateMessageInput {
@@ -48,6 +75,57 @@ export function isLimitedPersonalization(data?: EnrichmentData): boolean {
   const hasCompanyInfo = !!data.companyInfo && data.companyInfo.trim().length > 0;
 
   return !hasBio && !hasPosts && !hasCompanyInfo;
+}
+
+/**
+ * Check if enrichment data + research profile contain ≥ 2 non-empty
+ * personalization-worthy data points.
+ *
+ * Data points checked:
+ * 1. linkedinBio (non-empty string) — from enrichment data
+ * 2. recentPosts (non-empty array) — from enrichment data
+ * 3. companyInfo (non-empty string) — from enrichment data
+ * 4. topicsOfInterest (non-empty array) — from research profile
+ * 5. currentChallenges (non-empty array) — from research profile
+ *
+ * Requirements: 6.1, 6.2
+ */
+export function hasSufficientPersonalization(
+  enrichmentData?: EnrichmentData | Partial<ExtendedEnrichmentData>,
+  researchProfile?: ResearchProfile,
+): boolean {
+  let count = 0;
+
+  // Enrichment data points
+  if (enrichmentData) {
+    if (enrichmentData.linkedinBio && enrichmentData.linkedinBio.trim().length > 0) {
+      count++;
+    }
+    if (Array.isArray(enrichmentData.recentPosts) && enrichmentData.recentPosts.length > 0) {
+      count++;
+    }
+    if (enrichmentData.companyInfo && enrichmentData.companyInfo.trim().length > 0) {
+      count++;
+    }
+  }
+
+  // Research profile data points
+  if (researchProfile) {
+    if (
+      Array.isArray(researchProfile.topicsOfInterest) &&
+      researchProfile.topicsOfInterest.length > 0
+    ) {
+      count++;
+    }
+    if (
+      Array.isArray(researchProfile.currentChallenges) &&
+      researchProfile.currentChallenges.length > 0
+    ) {
+      count++;
+    }
+  }
+
+  return count >= 2;
 }
 
 /**
@@ -99,14 +177,42 @@ export function countWords(text: string): number {
  * Truncate a message to the word limit if it exceeds it.
  */
 export function enforceWordLimit(text: string, messageType: MessageType): string {
+  // Strip em dashes — replace with comma or period depending on context
+  const cleaned = text.replace(/\s*—\s*/g, ', ').replace(/,\s*,/g, ',');
   const limit = getWordLimit(messageType);
-  const words = text
+  const words = cleaned
     .trim()
     .split(/\s+/)
     .filter((w) => w.length > 0);
-  if (words.length <= limit) return text.trim();
+  if (words.length <= limit) return cleaned.trim();
   return words.slice(0, limit).join(' ');
 }
+
+// ---------------------------------------------------------------------------
+// Cold Outreach Bible — core principles for message generation
+// ---------------------------------------------------------------------------
+
+const COLD_OUTREACH_BIBLE = `Write an outreach email following this structure:
+
+Hi [First name],
+
+PARAGRAPH 1 (HOOK): Reference something specific about their work that shows genuine familiarity. Not generic praise. A real detail only they would recognize.
+
+PARAGRAPH 2 (YOUR OFFER): Introduce what you're reaching out about. Be clear and concise. This could be a product, a film, a book, a service, a collaboration, anything. Describe it vividly in 1-2 sentences.
+
+PARAGRAPH 3 (THE CONNECTION): Explain why this is relevant to THEM specifically. Connect your offer to their work, interests, or audience. Make them see the fit.
+
+PARAGRAPH 4 (THE ASK): A soft, respectful ask. Give them options for how to engage (screener link, one-pager, quick call, whatever fits). Make it easy to say yes.
+
+CLOSING: A warm one-liner like "Thank you for the care you bring to this work." Then sign off with "Warm regards," followed by the sender's name.
+
+CRITICAL — DO NOT FABRICATE:
+- ONLY reference content explicitly provided in the data below.
+- If no specific content is provided, reference their role, company, or known work instead.
+- NEVER fake a hook. If you don't have details, be direct about why you're reaching out.
+- NEVER use em dashes. Use commas, periods, or restructure.
+
+Output ONLY the message. No subject line. No commentary.`;
 
 // ---------------------------------------------------------------------------
 // Prompt construction
@@ -122,6 +228,7 @@ export function buildPrompt(input: GenerateMessageInput): string {
     tone,
     productContext,
     projectName,
+    senderName,
   } = input;
 
   const typeLabel = messageType === 'cold_dm' ? 'cold DM' : 'cold email';
@@ -137,19 +244,71 @@ export function buildPrompt(input: GenerateMessageInput): string {
   }
 
   const projectSection = projectName ? `Project: ${projectName}\n\n` : '';
+  const signOff = input.emailSignature
+    ? `Use this EXACT sign-off (do not modify it):\n${input.emailSignature}`
+    : senderName
+      ? `Sign off with: "Warm regards,\n${senderName}"`
+      : 'Sign off with "Warm regards," followed by the sender\'s first name. If unknown, just use "Warm regards."';
 
-  return `Write a ${typeLabel} to ${leadName}, who is a ${leadRole} at ${leadCompany}.
+  const painPointSection = input.painPoints?.length
+    ? `Key challenges (tie these into the message — connect the prospect's likely challenges to what you're offering):\n${input.painPoints.map((p) => `- ${p}`).join('\n')}`
+    : '';
 
-Tone: ${tone}
-Word limit: ${wordLimit} words maximum
+  const globalSteeringSection = input.globalSteering
+    ? `\nGLOBAL STEERING (apply to all messages unless overridden by per-lead steering):\n${input.globalSteering}`
+    : '';
+  const steeringSection = input.steeringContext
+    ? `\nPER-LEAD STEERING (high priority — follow these instructions for this specific lead):\n${input.steeringContext}`
+    : '';
 
-${projectSection}Product context: ${productContext}
+  const callNotesSection =
+    input.callNotes && input.callNotes.length > 0
+      ? `\nCALL NOTES & INSIGHTS:\n${input.callNotes
+          .map(
+            (cn) =>
+              `- Pain points: ${cn.painPoints.join(', ')}\n  Objections: ${cn.objections.join(', ')}\n  Sentiment: ${cn.sentiment}`,
+          )
+          .join('\n')}`
+      : '';
+
+  return `${COLD_OUTREACH_BIBLE}
+
+---
+
+Write a ${typeLabel} to ${leadName}, who is a ${leadRole} at ${leadCompany}.
+Tone: ${tone}. Word limit: ${wordLimit} words max.
+${projectSection ? `Project: ${projectName}\n` : ''}What you're offering: ${productContext}
 
 ${personalizationSection}
 
-IMPORTANT: Do NOT use "[Your Name]" as a placeholder. Simply omit the sign-off name if you don't know the sender's name.
+${painPointSection}
+${globalSteeringSection}
+${steeringSection}
+${callNotesSection}
 
-Output ONLY the message text, no subject line, no greeting prefix like "Subject:", no extra commentary.`;
+${signOff}
+
+Output ONLY the message text. No subject line. No "Subject:" prefix. No commentary.`;
+}
+
+// ---------------------------------------------------------------------------
+// Subject line generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a subject line for a cold email based on the prospect and product.
+ * Follows the Cold Outreach Bible: specific enough that only one person could have received it.
+ */
+function generateSubjectLine(leadName: string, leadCompany: string, leadRole: string): string {
+  // Build a simple, specific subject from available data
+  const firstName = leadName.split(/\s+/)[0];
+  if (leadCompany && leadCompany.trim()) {
+    return `${firstName} + ${leadCompany.trim()}`;
+  }
+  if (leadRole && leadRole.trim()) {
+    return `Quick question, ${firstName}`;
+  }
+  return `Quick question, ${firstName}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,21 +341,22 @@ export async function generateMessage(input: GenerateMessageInput): Promise<Mess
   const limited = isLimitedPersonalization(input.enrichmentData);
   const personalizationDetails = collectPersonalizationDetails(input.enrichmentData);
   const prompt = buildPrompt(input);
+  const systemPrompt = `TONE DIRECTIVE: ${TONE_MODIFIERS[input.tone]}\n\n${COLD_OUTREACH_SYSTEM_PROMPT}`;
 
   let rawMessage: string;
   try {
     const client = getOpenAIClient();
     const completion = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages: [
         {
           role: 'system',
-          content: COLD_OUTREACH_SYSTEM_PROMPT,
+          content: systemPrompt,
         },
         { role: 'user', content: prompt },
       ],
       max_tokens: 500,
-      temperature: 0.7,
+      temperature: 0.3,
     });
 
     rawMessage = completion.choices[0]?.message?.content?.trim() ?? '';
@@ -216,6 +376,7 @@ export async function generateMessage(input: GenerateMessageInput): Promise<Mess
 
   return {
     message,
+    subjectLine: generateSubjectLine(input.leadName, input.leadCompany, input.leadRole),
     personalizationDetails,
     limitedPersonalization: limited,
   };
@@ -229,32 +390,26 @@ export async function generateMessage(input: GenerateMessageInput): Promise<Mess
  * System prompt distilled from proven cold outreach strategy.
  * Teaches the model to write like a smart friend, not a desperate salesperson.
  */
-export const COLD_OUTREACH_SYSTEM_PROMPT = `You are a cold outreach writer who gets 40%+ reply rates. You write like a real human — a smart friend, not a salesperson.
+export const COLD_OUTREACH_SYSTEM_PROMPT = `You are an outreach writer. You write like a thoughtful person reaching out to someone whose work they genuinely respect. Warm, specific, human. Not a marketer. Not a salesperson.
 
-THE PHILOSOPHY:
-Cold outreach works when it doesn't feel like outreach. The best emails feel like they were written by someone who genuinely understands the prospect's world and has something worth their time. Most people never ask. They assume the answer is no. Your job is to knock on the door in a way that makes them want to open it.
+Your only job: make one specific person feel seen, and want to respond.
 
-EXACT STRUCTURE (5 lines, no more):
-1. HOOK — One line proving you paid attention. Reference their specific post, talk, product, decision, or words. Not vague flattery. A real detail only they would recognize.
-2. THE BRIDGE — Connect their world to the value. Frame the problem around what it costs THEM, not what you solve. Make them feel the pain before you offer the fix.
-3. THE OFFER — One sentence. Outcome-focused, not feature-focused. What changes for them?
-4. LOW-FRICTION CTA — Make it too easy to say yes. "Mind if I send a 2-min demo?" or "Got 5 min for a quick yes/no?" Never "would love to connect sometime."
-5. SIGN OFF — First name only. No titles. No company. No fluff. If you don't know the sender's name, just end after the CTA.
+RULES (non-negotiable):
+- Start with: Hi [First name],
+- End with: Warm regards, [Sender name]
+- 3-5 short paragraphs. Each paragraph 1-2 sentences max.
+- The first paragraph must reference something SPECIFIC about their work. Not flattery. A real detail that shows you paid attention.
+- The second paragraph introduces what you're reaching out about. Be clear and concise about what it is.
+- The third paragraph connects why it's relevant to THEM specifically.
+- The final paragraph is a soft, respectful ask. Give them options for how to engage.
+- NEVER use em dashes. Use commas, periods, or restructure the sentence.
+- Every sentence must feel like it was written for exactly one person.
+- Write like a human. Use contractions. Be warm but not sycophantic.
 
-CRITICAL RULES:
-- Your first line IS the hook. No "Hey [name]," followed by filler. Jump straight in.
-- If the message could be sent to anyone, it's garbage. Every word should prove this was written for exactly one person.
-- Nobody cares what you built. They care what it does for THEM.
-- Short paragraphs. White space. Scannable. If you can't say it in five lines, you don't understand the offer.
-- Write like a human. Use contractions. Use fragments. This is a vibe check, not a thesis.
-- Match the platform: DMs are shorter and more casual. Emails can be slightly more structured but still direct.
-- NEVER use placeholder text like [Your Name], [Company], etc. Write the actual message.
-- NEVER use these phrases: "I hope this finds you well", "I came across your profile", "I wanted to reach out", "Quick question", "Following up", "Partnership opportunity", "Would love to connect", "Let me know if there's anything you need help with", "Just checking in", "Touching base"
+BANNED WORDS/PHRASES (use any of these = fail):
+hefty, impressive, stands out, really stands out, I noticed, I believe, it's clear that, especially with how, I wanted to reach out, would love to connect, quick question, following up, touching base, I hope this finds you well, partnership opportunity, I came across, synergy, circle back, is commendable, is crucial, it must be challenging
 
-THE PRODUCT-PAIN POINT CONNECTION:
-This is the most important part. You must creatively and warmly tie the founder's product to the prospect's specific pain point. Don't just mention the product — show how it directly addresses something the prospect is struggling with RIGHT NOW. Use their own words, their own context, their own world to make the connection feel natural, not forced.
-
-Your goal: write a message so specific and human that the prospect thinks "okay, this person actually gets it" and replies.`;
+OUTPUT: message text only. No subject line. No commentary.`;
 
 // ---------------------------------------------------------------------------
 // Banned phrases
@@ -397,11 +552,16 @@ export function buildEnhancedPrompt(input: EnhancedGenerateMessageInput): string
   let painPointSection = '';
   if (ctx.painPointReference) {
     const pp = ctx.painPointReference;
-    painPointSection = `Pain point intersection (address this in the message):\n- Founder solves: "${pp.founderPainPoint}"\n- Prospect struggles with: "${pp.prospectChallenge}"`;
+    painPointSection = `Challenge intersection (address this — connect the prospect's challenge to what you're offering):\n- Offer addresses: "${pp.founderPainPoint}"\n- Prospect struggles with: "${pp.prospectChallenge}"`;
   } else if (ctx.intersectionAnalysis.painPointMatches.length > 0) {
     const best = ctx.intersectionAnalysis.painPointMatches[0];
-    painPointSection = `Pain point intersection (address this in the message):\n- Founder solves: "${best.founderPainPoint}"\n- Prospect struggles with: "${best.prospectChallenge}"`;
+    painPointSection = `Challenge intersection (address this — connect the prospect's challenge to what you're offering):\n- Offer addresses: "${best.founderPainPoint}"\n- Prospect struggles with: "${best.prospectChallenge}"`;
   }
+
+  // Always include the ICP's pain points so the LLM knows what the offer solves
+  const icpPainPoints = ctx.enrichedICP.painPointsSolved?.length
+    ? `Challenges this offer addresses (use the most relevant one for THIS prospect's role/industry):\n${ctx.enrichedICP.painPointsSolved.map((p) => `- ${p}`).join('\n')}`
+    : '';
 
   // --- Topics of interest ---
   let topicsSection = '';
@@ -412,35 +572,59 @@ export function buildEnhancedPrompt(input: EnhancedGenerateMessageInput): string
   // --- Prospect's published content (ContentSummary) ---
   const contentDetailSection = buildContentDetailSection(ctx);
 
-  // --- Banned phrases ---
-  const bannedSection = `IMPORTANT: Do NOT use any of these generic phrases:\n${BANNED_PHRASES.map((p) => `- "${p}"`).join('\n')}`;
-
   // --- Content reference instruction ---
   const contentInstruction = contentDetailSection
-    ? "Your hook MUST reference a specific detail (a quote, opinion, or key point) from the prospect's published content above. Don't just mention it — show you actually read it."
-    : "Your hook MUST reference a specific piece of the prospect's recent content or activity. Show you paid attention.";
+    ? "Your hook MUST reference a specific detail (a quote, opinion, or key point) from the prospect's published content above."
+    : '';
 
   // --- Project name ---
   const projectSection = input.projectName ? `Project: ${input.projectName}` : '';
+  const signOff = input.emailSignature
+    ? `Use this EXACT sign-off (do not modify it):\n${input.emailSignature}`
+    : input.senderName
+      ? `Sign off with: "Warm regards,\n${input.senderName}"`
+      : 'Sign off with "Warm regards," followed by the sender\'s first name. If unknown, just use "Warm regards."';
 
-  // --- Assemble prompt ---
+  // --- Steering context ---
+  const globalSteeringSection = input.globalSteering
+    ? `\nGLOBAL STEERING (apply to all messages unless overridden by per-lead steering):\n${input.globalSteering}`
+    : '';
+  const steeringSection = input.steeringContext
+    ? `\nPER-LEAD STEERING (high priority — follow these instructions for this specific lead):\n${input.steeringContext}`
+    : '';
+
+  // --- Call notes ---
+  const callNotesSection =
+    input.callNotes && input.callNotes.length > 0
+      ? `\nCALL NOTES & INSIGHTS:\n${input.callNotes
+          .map(
+            (cn) =>
+              `- Pain points: ${cn.painPoints.join(', ')}\n  Objections: ${cn.objections.join(', ')}\n  Sentiment: ${cn.sentiment}`,
+          )
+          .join('\n')}`
+      : '';
+
+  // --- Assemble prompt: bible first, then data ---
   const sections = [
+    COLD_OUTREACH_BIBLE,
+    '---',
     `Write a ${typeLabel} to ${leadName}, who is a ${leadRole} at ${leadCompany}.`,
-    `Tone: ${tone}`,
-    `Word limit: ${wordLimit} words maximum`,
+    `Tone: ${tone}. Word limit: ${wordLimit} words max.`,
     projectSection,
-    `Product context: ${productContext}`,
-    productDesc,
+    `What you're offering: ${productContext}`,
+    productDesc ? `Description: ${productDesc}` : '',
     valueSection,
     contentReferenceSection,
     painPointSection,
+    icpPainPoints,
     topicsSection,
     contentDetailSection,
-    bannedSection,
     contentInstruction,
-    'Frame the pain point around what it costs THEM, not what you solve. Make them feel the problem before you offer the fix.',
-    'End with a low-friction CTA — something so easy they\'d feel silly saying no. "Mind if I send a 2-min demo?" or "Got 5 min for a quick yes/no?"',
-    'Output ONLY the message text, no subject line, no greeting prefix like "Subject:", no extra commentary.',
+    globalSteeringSection,
+    steeringSection,
+    callNotesSection,
+    signOff,
+    'Output ONLY the message text. No subject line. No "Subject:" prefix. No commentary.',
   ].filter(Boolean);
 
   return sections.join('\n\n');
@@ -522,21 +706,21 @@ export async function generateEnhancedMessage(
     intersectionScore: ctx.intersectionAnalysis.overallRelevanceScore,
   };
 
-  // Generate message via OpenAI
   let rawMessage: string;
   try {
     const client = getOpenAIClient();
+    const systemPrompt = `TONE DIRECTIVE: ${TONE_MODIFIERS[input.tone]}\n\n${COLD_OUTREACH_SYSTEM_PROMPT}`;
     const completion = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages: [
         {
           role: 'system',
-          content: COLD_OUTREACH_SYSTEM_PROMPT,
+          content: systemPrompt,
         },
         { role: 'user', content: prompt },
       ],
       max_tokens: 500,
-      temperature: 0.7,
+      temperature: 0.3,
     });
 
     rawMessage = completion.choices[0]?.message?.content?.trim() ?? '';
@@ -565,8 +749,156 @@ export async function generateEnhancedMessage(
 
   return {
     message,
+    subjectLine: generateSubjectLine(input.leadName, input.leadCompany, input.leadRole),
     personalizationDetails,
     limitedPersonalization: false,
     personalizationMetadata: metadata,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Message generation with on-demand research fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a message with on-demand research fallback.
+ *
+ * 1. Check if the lead's enrichment data + research profile have ≥ 2
+ *    personalization-worthy data points via `hasSufficientPersonalization`.
+ * 2. If insufficient, trigger `researchProspect` for on-demand research.
+ * 3. After research, use the enhanced prompt path with research profile context.
+ * 4. If on-demand research also fails to produce sufficient context, generate
+ *    a role-and-company-specific message with `limitedPersonalization: true`.
+ * 5. Record in `personalizationMetadata` which sources contributed and whether
+ *    on-demand research was triggered.
+ *
+ * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6
+ */
+export async function generateMessageWithResearchFallback(
+  input: EnhancedGenerateMessageInput,
+  leadId: string,
+): Promise<EnhancedMessageResponse> {
+  let researchProfile: ResearchProfile | null = null;
+  let onDemandResearchTriggered = false;
+
+  // Step 1: Retrieve existing research profile
+  try {
+    researchProfile = await getResearchProfile(leadId);
+  } catch {
+    // If we can't fetch the profile, proceed without it
+  }
+
+  // Step 2: Check if we have sufficient personalization
+  const sufficient = hasSufficientPersonalization(
+    input.enrichmentData,
+    researchProfile ?? undefined,
+  );
+
+  // Step 3: If insufficient, trigger on-demand research
+  if (!sufficient) {
+    onDemandResearchTriggered = true;
+
+    try {
+      const lead = await getLeadById(leadId);
+      if (lead) {
+        researchProfile = await researchProspect(lead);
+      }
+    } catch {
+      // On-demand research failed — we'll fall back below
+    }
+  }
+
+  // Step 4: Check sufficiency again after on-demand research
+  const sufficientAfterResearch = hasSufficientPersonalization(
+    input.enrichmentData,
+    researchProfile ?? undefined,
+  );
+
+  // Step 5: If we have a personalization context on the input, use enhanced path
+  if (sufficientAfterResearch && input.personalizationContext) {
+    const result = await generateEnhancedMessage(input);
+    // Augment metadata with on-demand research info
+    const metadata: PersonalizationMetadata = result.personalizationMetadata ?? {
+      sourcesUsed: [],
+      painPointsReferenced: [],
+      contentReferenced: [],
+      intersectionScore: 0,
+    };
+    if (onDemandResearchTriggered) {
+      metadata.sourcesUsed = [
+        ...new Set([...metadata.sourcesUsed, ...(researchProfile?.sourcesUsed ?? [])]),
+      ];
+    }
+    return {
+      ...result,
+      personalizationMetadata: {
+        ...metadata,
+        onDemandResearchTriggered,
+      } as PersonalizationMetadata & { onDemandResearchTriggered: boolean },
+    };
+  }
+
+  // Step 6: If we have research data but no pre-built personalization context,
+  // try to build one from the research profile
+  if (sufficientAfterResearch && researchProfile) {
+    try {
+      const enrichedICP = input.personalizationContext?.enrichedICP ?? {
+        targetRole: input.leadRole,
+        industry: '',
+        companyStage: '' as const,
+        geography: '',
+        productDescription: input.productContext,
+      };
+
+      const ctx = await buildPersonalizationContext(
+        enrichedICP as import('@/types').EnrichedICP,
+        researchProfile,
+      );
+
+      const enhancedInput: EnhancedGenerateMessageInput = {
+        ...input,
+        personalizationContext: ctx,
+      };
+
+      const result = await generateEnhancedMessage(enhancedInput);
+      const sourcesUsed = [
+        ...new Set([
+          ...(result.personalizationMetadata?.sourcesUsed ?? []),
+          ...(researchProfile.sourcesUsed ?? []),
+        ]),
+      ];
+
+      return {
+        ...result,
+        personalizationMetadata: {
+          sourcesUsed,
+          painPointsReferenced: result.personalizationMetadata?.painPointsReferenced ?? [],
+          contentReferenced: result.personalizationMetadata?.contentReferenced ?? [],
+          intersectionScore: result.personalizationMetadata?.intersectionScore ?? 0,
+          onDemandResearchTriggered,
+        } as PersonalizationMetadata & { onDemandResearchTriggered: boolean },
+      };
+    } catch {
+      // Failed to build personalization context — fall through to limited path
+    }
+  }
+
+  // Step 7: Fall back to role-and-company-specific message with limited personalization
+  const baseResult = await generateMessage(input);
+  const fallbackSourcesUsed = researchProfile?.sourcesUsed ?? [];
+  if (input.enrichmentData?.dataSources) {
+    fallbackSourcesUsed.push(...input.enrichmentData.dataSources);
+  }
+
+  return {
+    ...baseResult,
+    limitedPersonalization: true,
+    personalizationMetadata: {
+      sourcesUsed: [...new Set(fallbackSourcesUsed)],
+      painPointsReferenced: [],
+      contentReferenced: [],
+      intersectionScore: 0,
+      onDemandResearchTriggered,
+    } as PersonalizationMetadata & { onDemandResearchTriggered: boolean },
   };
 }

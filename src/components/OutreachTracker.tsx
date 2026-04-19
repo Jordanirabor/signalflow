@@ -1,5 +1,6 @@
 'use client';
 
+import ComposeEmailModal from '@/components/ComposeEmailModal';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,7 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { useSession } from '@/hooks/useSession';
-import type { ApiError, OutreachRecord, ThrottleStatus } from '@/types';
+import type { ApiError, CRMStatus, OutreachRecord, ThrottleStatus } from '@/types';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
 interface StaleLeadEntry {
@@ -34,9 +35,10 @@ interface ThrottleStatusMap {
 interface OutreachTrackerProps {
   leadId: string;
   prefillMessage?: string;
+  lead?: { id: string; name: string; email?: string; crmStatus: CRMStatus };
 }
 
-export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrackerProps) {
+export default function OutreachTracker({ leadId, prefillMessage, lead }: OutreachTrackerProps) {
   const { session, isLoading: sessionLoading } = useSession();
   // Form state
   const [channel, setChannel] = useState<'email' | 'dm'>('email');
@@ -45,6 +47,7 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
+  const [composeOpen, setComposeOpen] = useState(false);
 
   // Throttle state
   const [throttle, setThrottle] = useState<ThrottleStatusMap | null>(null);
@@ -193,7 +196,7 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
 
   return (
     <div className="space-y-6">
-      <h3 className="text-xl font-semibold tracking-tight">Record Outreach</h3>
+      <h3 className="text-xl font-semibold tracking-tight">Send Outreach</h3>
 
       {/* Throttle warning banner */}
       {isWarning && !isBlocked && currentThrottle && (
@@ -283,9 +286,15 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
               This is a follow-up
             </label>
 
-            <Button type="submit" disabled={submitting || isBlocked} aria-disabled={isBlocked}>
-              {submitting ? 'Recording...' : 'Record Outreach'}
-            </Button>
+            {channel === 'email' ? (
+              <Button type="button" onClick={() => setComposeOpen(true)} disabled={isBlocked}>
+                Compose Email
+              </Button>
+            ) : (
+              <Button type="submit" disabled={submitting || isBlocked} aria-disabled={isBlocked}>
+                {submitting ? 'Sending...' : 'Send Email'}
+              </Button>
+            )}
 
             {formError && formError !== 'Message content is required' && (
               <Alert variant="destructive" role="alert">
@@ -358,6 +367,10 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
         </CardHeader>
         {showStale && (
           <CardContent>
+            <p className="text-sm text-muted-foreground mb-4">
+              Stale leads are prospects you contacted over 7 days ago who haven&apos;t replied.
+              Consider re-engaging them with a fresh approach.
+            </p>
             {staleLoading ? (
               <div className="space-y-2">
                 <Skeleton className="h-8" />
@@ -372,18 +385,22 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
                     <TableHead>Name</TableHead>
                     <TableHead>Company</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Last Contact Date</TableHead>
                     <TableHead>Days Since Outreach</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {staleLeads.map((lead) => (
-                    <TableRow key={lead.leadId}>
-                      <TableCell className="font-medium">{lead.leadName}</TableCell>
-                      <TableCell>{lead.company}</TableCell>
+                  {staleLeads.map((staleLead) => (
+                    <TableRow key={staleLead.leadId}>
+                      <TableCell className="font-medium">{staleLead.leadName}</TableCell>
+                      <TableCell>{staleLead.company}</TableCell>
                       <TableCell>
-                        <Badge variant="secondary">{lead.crmStatus}</Badge>
+                        <Badge variant="secondary">{staleLead.crmStatus}</Badge>
                       </TableCell>
-                      <TableCell>{daysSince(lead.lastOutreachDate)} days</TableCell>
+                      <TableCell className="whitespace-nowrap text-sm">
+                        {new Date(staleLead.lastOutreachDate).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>{daysSince(staleLead.lastOutreachDate)} days</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -392,6 +409,19 @@ export default function OutreachTracker({ leadId, prefillMessage }: OutreachTrac
           </CardContent>
         )}
       </Card>
+
+      {lead && (
+        <ComposeEmailModal
+          open={composeOpen}
+          onOpenChange={setComposeOpen}
+          lead={lead}
+          prefillBody={messageContent}
+          onSuccess={() => {
+            setMessageContent('');
+            Promise.all([fetchHistory(), fetchThrottleStatus()]);
+          }}
+        />
+      )}
     </div>
   );
 }

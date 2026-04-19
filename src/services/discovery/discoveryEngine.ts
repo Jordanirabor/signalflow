@@ -3,13 +3,27 @@
 // ============================================================
 
 import type { ICPProfile } from '@/types';
-import type { AnnotatedQuery, DiscoveredLeadData, ICP, SourceAdapter } from './types';
+import type {
+  AnnotatedQuery,
+  DiscoveredLeadData,
+  ICP,
+  QueryRetryContext,
+  SourceAdapter,
+} from './types';
 
 import { calculateLeadScoreV2 } from '../scoringService';
 import { shuffleAdapterOrder } from './antiDetection';
+import { logDiscoverySummary, logStructured } from './discoveryLogger';
 import { isSourceAvailable, recordFailure, recordSuccess } from './healthMonitor';
-import { generateQueries, generateQueriesForProfile } from './queryGenerator';
+import {
+  generateCreativeQueries,
+  generateQueriesForProfile,
+  generateRefinedQueries,
+  persistQueryHistory,
+  sanitizeForSerper,
+} from './queryGenerator';
 import { acquirePermit, recordRequest } from './rateLimiter';
+import { isObfuscatedName, resolveObfuscatedName } from './waterfallEmailFinder';
 
 // Source adapters
 import { directoryScraper } from './directoryScraper';
@@ -50,9 +64,12 @@ function getDiscoveryAdapters(): SourceAdapter[] {
   if (!hasProxies) {
     const enabledBrowserScrapers = BROWSER_SCRAPERS.filter((a) => a.isEnabled());
     if (enabledBrowserScrapers.length > 0) {
-      console.log(
-        `[DiscoveryEngine] No proxies configured — skipping ${enabledBrowserScrapers.length} browser-based scrapers (they will get CAPTCHA-blocked). Set SCRAPING_PROXY_ENABLED=true and SCRAPING_PROXY_LIST to enable.`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `No proxies configured — skipping ${enabledBrowserScrapers.length} browser-based scrapers (they will get CAPTCHA-blocked). Set SCRAPING_PROXY_ENABLED=true and SCRAPING_PROXY_LIST to enable.`,
+      });
     }
     return [...API_ADAPTERS];
   }
@@ -177,32 +194,107 @@ export function isValidPersonName(name: string): boolean {
 }
 
 /**
+ * Check if a string looks like a real company name (not a job title, description, or generic term).
+ * Returns false for values that are clearly not company names.
+ */
+export function isValidCompanyName(company: string): boolean {
+  if (!company || company.trim().length < 2) return false;
+  const lower = company.toLowerCase().trim();
+
+  // Reject common job titles/descriptions mistakenly stored as company names
+  const jobTitlePatterns =
+    /^(software engineer|product manager|data scientist|data protection officer|chief .* officer|cto|ceo|cmo|cfo|coo|vp of|director of|head of|engineer|developer|designer|analyst|consultant|freelancer|self[- ]employed|unemployed|student|intern|not specified|mobile app.*expert|digital expert|.*and digital expert)$/i;
+  if (jobTitlePatterns.test(lower)) return false;
+
+  // Reject single generic industry words
+  const genericTerms = [
+    'technology',
+    'finance',
+    'healthcare',
+    'saas',
+    'it',
+    'ai',
+    'ml',
+    'e-commerce',
+    'ecommerce',
+    'mobile applications',
+  ];
+  if (genericTerms.includes(lower)) return false;
+
+  // Reject if it looks like a LinkedIn headline (contains "and" with generic terms on both sides)
+  if (
+    /^(mobile|digital|web|cloud|data|ai)\s+(app|application|expert|specialist|consultant)/i.test(
+      lower,
+    )
+  )
+    return false;
+
+  return true;
+}
+
+/**
  * Filter discovered leads to only those with valid data quality.
  * Removes leads with:
  * - Missing or invalid person names (company names, single words)
  * - Name identical to company (maps scraper artifact)
- * - Missing company
+ * - Invalid company names (job titles, generic terms)
  */
 export function filterValidLeads(leads: DiscoveredLeadData[]): DiscoveredLeadData[] {
-  return leads.filter((lead) => {
+  return filterValidLeadsWithReasons(leads).valid;
+}
+
+/**
+ * Filter discovered leads and track filter reasons for logging.
+ * Returns both the valid leads and a record of filter reason → count.
+ */
+export function filterValidLeadsWithReasons(leads: DiscoveredLeadData[]): {
+  valid: DiscoveredLeadData[];
+  filterReasons: Record<string, number>;
+} {
+  const filterReasons: Record<string, number> = {};
+  const valid = leads.filter((lead) => {
     // Must have a valid person name
     if (!isValidPersonName(lead.name)) {
-      console.log(
-        `[DiscoveryEngine] Filtered out invalid name: "${lead.name}" (source: ${lead.discoverySource})`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Filtered out invalid name: "${lead.name}"`,
+        source: lead.discoverySource,
+      });
+      filterReasons['invalid_name'] = (filterReasons['invalid_name'] ?? 0) + 1;
       return false;
     }
 
     // Name must not be the same as company (maps scraper artifact)
     if (lead.company && lead.name.trim().toLowerCase() === lead.company.trim().toLowerCase()) {
-      console.log(
-        `[DiscoveryEngine] Filtered out name=company: "${lead.name}" (source: ${lead.discoverySource})`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Filtered out name=company: "${lead.name}"`,
+        source: lead.discoverySource,
+      });
+      filterReasons['name_equals_company'] = (filterReasons['name_equals_company'] ?? 0) + 1;
       return false;
+    }
+
+    // Clean up invalid company names — clear them rather than filtering the lead
+    if (lead.company && !isValidCompanyName(lead.company)) {
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Cleared invalid company name: "${lead.company}" for "${lead.name}"`,
+        source: lead.discoverySource,
+      });
+      lead.company = '';
     }
 
     return true;
   });
+
+  return { valid, filterReasons };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,29 +312,40 @@ export function filterValidLeads(leads: DiscoveredLeadData[]): DiscoveredLeadDat
  * 6. Returns DiscoveredLeadData[] with discoverySource attached
  */
 export async function discoverLeads(icp: ICP): Promise<DiscoveredLeadData[]> {
+  // Metrics tracking for discovery summary
+  const resultsPerSource: Record<string, number> = {};
+
   // 1. Filter to enabled adapters
   const enabledAdapters = getDiscoveryAdapters().filter((adapter) => adapter.isEnabled());
 
   if (enabledAdapters.length === 0) {
-    console.error(
-      '[DiscoveryEngine] All discovery sources are disabled. Returning empty result set.',
-    );
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'error',
+      message: 'All discovery sources are disabled. Returning empty result set.',
+    });
     return [];
   }
 
   // 2. Generate search queries from ICP
   let queries: AnnotatedQuery[];
   try {
-    const result = await generateQueries(icp);
+    const result = await generateCreativeQueries(icp, icp.id);
     queries = result.queries;
-    console.log(
-      `[DiscoveryEngine] Generated ${queries.length} queries via ${result.generationMethod}`,
-    );
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'info',
+      message: `Generated ${queries.length} queries via ${result.generationMethod}`,
+    });
   } catch (error) {
-    console.error(
-      '[DiscoveryEngine] Query generation failed:',
-      error instanceof Error ? error.message : String(error),
-    );
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'error',
+      message: `Query generation failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
     return [];
   }
 
@@ -255,9 +358,13 @@ export async function discoverLeads(icp: ICP): Promise<DiscoveredLeadData[]> {
   for (const adapter of shuffledAdapters) {
     // Check source health before calling
     if (!isSourceAvailable(adapter.name)) {
-      console.log(
-        `[DiscoveryEngine] Source "${adapter.name}" is unavailable (circuit breaker). Skipping.`,
-      );
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Source "${adapter.name}" is unavailable (circuit breaker). Skipping.`,
+        source: adapter.name,
+      });
       continue;
     }
 
@@ -271,15 +378,17 @@ export async function discoverLeads(icp: ICP): Promise<DiscoveredLeadData[]> {
       // Record the request
       recordRequest(adapter.name);
 
-      if (results.length === 0) {
-        console.log(
-          `[DiscoveryEngine] Source "${adapter.name}" returned 0 results. Continuing with remaining sources.`,
-        );
-      } else {
-        console.log(
-          `[DiscoveryEngine] Source "${adapter.name}" returned ${results.length} results.`,
-        );
-      }
+      // Track results per source
+      resultsPerSource[adapter.name] = (resultsPerSource[adapter.name] ?? 0) + results.length;
+
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Source "${adapter.name}" returned ${results.length} results.`,
+        source: adapter.name,
+        metadata: { resultCount: results.length },
+      });
 
       // Attach discoverySource to each result if not already set
       const taggedResults = results.map((prospect) => ({
@@ -292,10 +401,63 @@ export async function discoverLeads(icp: ICP): Promise<DiscoveredLeadData[]> {
       // Record success with health monitor
       recordSuccess(adapter.name);
     } catch (error) {
-      console.error(
-        `[DiscoveryEngine] Source "${adapter.name}" failed:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Check if this is a Serper 400 error — retry with sanitized queries
+      if (errorMsg.includes('400') || errorMsg.includes('Bad Request')) {
+        logStructured({
+          timestamp: new Date().toISOString(),
+          stage: 'discovery',
+          level: 'warn',
+          message: `Source "${adapter.name}" got Serper 400 error. Sanitizing queries and retrying once.`,
+          source: adapter.name,
+        });
+
+        try {
+          const sanitizedQueries = queries.map((q) => ({
+            ...q,
+            query: sanitizeForSerper(q.query),
+          }));
+          const retryResults = adapter.discover
+            ? await adapter.discover(sanitizedQueries, icp)
+            : [];
+          recordRequest(adapter.name);
+          resultsPerSource[adapter.name] =
+            (resultsPerSource[adapter.name] ?? 0) + retryResults.length;
+
+          const taggedRetryResults = retryResults.map((prospect) => ({
+            ...prospect,
+            discoverySource: prospect.discoverySource || adapter.name,
+          }));
+          allProspects.push(...taggedRetryResults);
+          recordSuccess(adapter.name);
+
+          logStructured({
+            timestamp: new Date().toISOString(),
+            stage: 'discovery',
+            level: 'info',
+            message: `Serper 400 retry for "${adapter.name}" returned ${retryResults.length} results.`,
+            source: adapter.name,
+          });
+          continue;
+        } catch (retryError) {
+          logStructured({
+            timestamp: new Date().toISOString(),
+            stage: 'discovery',
+            level: 'error',
+            message: `Serper 400 retry for "${adapter.name}" also failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+            source: adapter.name,
+          });
+        }
+      }
+
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'error',
+        message: `Source "${adapter.name}" failed: ${errorMsg}`,
+        source: adapter.name,
+      });
 
       // Record failure with health monitor
       recordFailure(adapter.name);
@@ -304,15 +466,195 @@ export async function discoverLeads(icp: ICP): Promise<DiscoveredLeadData[]> {
     }
   }
 
+  // 4a. Persist query history (graceful — errors logged, not thrown)
+  try {
+    await persistQueryHistory(queries, icp.id);
+  } catch (err) {
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'warn',
+      message: `Failed to persist query history: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  // 4b. Resolve obfuscated Apollo names using LinkedIn results
+  const apolloSourceName = 'apollo_api';
+  const nonApolloProspects = allProspects.filter((p) => p.discoverySource !== apolloSourceName);
+  for (const prospect of allProspects) {
+    if (prospect.discoverySource === apolloSourceName && isObfuscatedName(prospect.name)) {
+      const resolved = resolveObfuscatedName(prospect.name, prospect.company, nonApolloProspects);
+      if (resolved !== prospect.name) {
+        logStructured({
+          timestamp: new Date().toISOString(),
+          stage: 'discovery',
+          level: 'info',
+          message: `Resolved obfuscated Apollo name "${prospect.name}" → "${resolved}"`,
+          source: apolloSourceName,
+        });
+        prospect.name = resolved;
+      }
+    }
+  }
+
   // 5. Deduplicate by normalized name + company, merging data
   const deduplicated = deduplicateProspects(allProspects);
 
   // 6. Filter to valid leads only (real person names, not company names)
-  const validated = filterValidLeads(deduplicated);
+  const { valid: validated, filterReasons } = filterValidLeadsWithReasons(deduplicated);
 
-  console.log(
-    `[DiscoveryEngine] Discovery complete: ${validated.length} valid prospects from ${deduplicated.length} deduplicated (${allProspects.length} raw) across ${shuffledAdapters.length} sources. Filtered out ${deduplicated.length - validated.length} low-quality leads.`,
-  );
+  logStructured({
+    timestamp: new Date().toISOString(),
+    stage: 'discovery',
+    level: 'info',
+    message: `Initial pass: ${validated.length} valid prospects from ${deduplicated.length} deduplicated (${allProspects.length} raw) across ${shuffledAdapters.length} sources. Filtered out ${deduplicated.length - validated.length} low-quality leads.`,
+    metadata: {
+      validCount: validated.length,
+      deduplicatedCount: deduplicated.length,
+      rawCount: allProspects.length,
+    },
+  });
+
+  // 7. Retry with refined queries if valid leads < 3
+  if (validated.length < 3) {
+    logStructured({
+      timestamp: new Date().toISOString(),
+      stage: 'discovery',
+      level: 'info',
+      message: `Low yield detected (${validated.length} valid leads < 3). Generating refined queries for retry pass.`,
+    });
+
+    // Determine which vectors are missing from initial results
+    const discoveredVectors = new Set(queries.map((q) => q.vector));
+    const allVectors = ['linkedin', 'directory', 'github', 'twitter', 'maps', 'general'] as const;
+    const missingVectors = allVectors.filter((v) => !discoveredVectors.has(v));
+
+    const retryContext: QueryRetryContext = {
+      previousQueries: queries,
+      resultsCount: validated.length,
+      missingVectors,
+      feedback:
+        validated.length === 0
+          ? 'No valid leads found in initial discovery pass'
+          : `Only ${validated.length} valid lead(s) found. Need more diverse results.`,
+    };
+
+    try {
+      const refinedResult = await generateRefinedQueries(icp, retryContext);
+      const refinedQueries = refinedResult.queries;
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Generated ${refinedQueries.length} refined queries via ${refinedResult.generationMethod} for retry pass.`,
+      });
+
+      // Execute second discovery pass with refined queries
+      const retryProspects: DiscoveredLeadData[] = [];
+      const retryAdapters = shuffleAdapterOrder(enabledAdapters);
+
+      for (const adapter of retryAdapters) {
+        if (!isSourceAvailable(adapter.name)) {
+          continue;
+        }
+
+        try {
+          await acquirePermit(adapter.name);
+          const results = adapter.discover ? await adapter.discover(refinedQueries, icp) : [];
+          recordRequest(adapter.name);
+
+          // Track retry results per source
+          resultsPerSource[adapter.name] = (resultsPerSource[adapter.name] ?? 0) + results.length;
+
+          if (results.length > 0) {
+            logStructured({
+              timestamp: new Date().toISOString(),
+              stage: 'discovery',
+              level: 'info',
+              message: `Retry pass — source "${adapter.name}" returned ${results.length} results.`,
+              source: adapter.name,
+              metadata: { resultCount: results.length, pass: 'retry' },
+            });
+          }
+
+          const taggedResults = results.map((prospect) => ({
+            ...prospect,
+            discoverySource: prospect.discoverySource || adapter.name,
+          }));
+
+          retryProspects.push(...taggedResults);
+          recordSuccess(adapter.name);
+        } catch (error) {
+          logStructured({
+            timestamp: new Date().toISOString(),
+            stage: 'discovery',
+            level: 'error',
+            message: `Retry pass — source "${adapter.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
+            source: adapter.name,
+          });
+          recordFailure(adapter.name);
+        }
+      }
+
+      // Merge results from both passes and deduplicate
+      const mergedProspects = [...allProspects, ...retryProspects];
+      const mergedDeduplicated = deduplicateProspects(mergedProspects);
+      const { valid: mergedValidated, filterReasons: mergedFilterReasons } =
+        filterValidLeadsWithReasons(mergedDeduplicated);
+
+      // Combine filter reasons from both passes
+      const combinedFilterReasons: Record<string, number> = { ...filterReasons };
+      for (const [reason, count] of Object.entries(mergedFilterReasons)) {
+        combinedFilterReasons[reason] = (combinedFilterReasons[reason] ?? 0) + count;
+      }
+
+      const totalQueries = queries.length + refinedQueries.length;
+
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'info',
+        message: `Discovery complete (with retry): ${mergedValidated.length} valid prospects from ${mergedDeduplicated.length} deduplicated (${mergedProspects.length} raw).`,
+      });
+
+      // Log discovery summary
+      logDiscoverySummary({
+        totalQueries,
+        resultsPerSource,
+        leadsExtracted: mergedProspects.length,
+        leadsFiltered: mergedDeduplicated.length - mergedValidated.length,
+        filterReasons: combinedFilterReasons,
+        leadsDeduplicated: mergedDeduplicated.length,
+      });
+
+      return mergedValidated;
+    } catch (error) {
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'error',
+        message: `Retry query generation failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      // Fall through to return initial results
+    }
+  }
+
+  logStructured({
+    timestamp: new Date().toISOString(),
+    stage: 'discovery',
+    level: 'info',
+    message: `Discovery complete: ${validated.length} valid prospects.`,
+  });
+
+  // Log discovery summary
+  logDiscoverySummary({
+    totalQueries: queries.length,
+    resultsPerSource,
+    leadsExtracted: allProspects.length,
+    leadsFiltered: deduplicated.length - validated.length,
+    filterReasons,
+    leadsDeduplicated: deduplicated.length,
+  });
 
   return validated;
 }
@@ -381,20 +723,62 @@ export async function discoverLeadsMultiICP(
 
     if (cap <= 0) continue;
 
-    // Generate queries for this profile
+    // Generate queries for this profile using creative, history-aware generation
     let profileQueries: AnnotatedQuery[];
     try {
-      const result = await generateQueriesForProfile(profile);
+      const icp: ICP = {
+        id: profile.id,
+        founderId: profile.founderId,
+        targetRole: profile.targetRole,
+        industry: profile.industry,
+        companyStage: profile.companyStage,
+        geography: profile.geography,
+        customTags: profile.customTags,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      };
+      const icpWithSignals = {
+        ...icp,
+        painPoints: profile.painPoints,
+        buyingSignals: profile.buyingSignals,
+      };
+      const result = await generateCreativeQueries(icpWithSignals, profile.id);
       profileQueries = result.queries;
       console.log(
         `[DiscoveryEngine] Profile "${profile.targetRole}" generated ${profileQueries.length} queries via ${result.generationMethod}`,
       );
+
+      // If creative generation returned 0 queries, fall back to V2 profile generation
+      if (profileQueries.length === 0) {
+        console.warn(
+          `[DiscoveryEngine] Creative generation returned 0 queries for "${profile.targetRole}", falling back to profile generation`,
+        );
+        const fallbackResult = await generateQueriesForProfile(profile);
+        profileQueries = fallbackResult.queries;
+        console.log(
+          `[DiscoveryEngine] Profile "${profile.targetRole}" fallback generated ${profileQueries.length} queries via ${fallbackResult.generationMethod}`,
+        );
+      }
     } catch (error) {
+      // Creative generation failed entirely — fall back to V2 profile generation
       console.error(
-        `[DiscoveryEngine] Query generation failed for profile "${profile.targetRole}":`,
+        `[DiscoveryEngine] Creative query generation failed for profile "${profile.targetRole}":`,
         error instanceof Error ? error.message : String(error),
+        '— falling back to profile generation',
       );
-      continue;
+      try {
+        const fallbackResult = await generateQueriesForProfile(profile);
+        profileQueries = fallbackResult.queries;
+        console.log(
+          `[DiscoveryEngine] Profile "${profile.targetRole}" fallback generated ${profileQueries.length} queries via ${fallbackResult.generationMethod}`,
+        );
+      } catch (fallbackError) {
+        console.error(
+          `[DiscoveryEngine] All query generation failed for profile "${profile.targetRole}":`,
+          fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        );
+        continue;
+      }
     }
 
     // Execute discovery with adapters
@@ -432,12 +816,85 @@ export async function discoverLeadsMultiICP(
         profileProspects.push(...taggedResults);
         recordSuccess(adapter.name);
       } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+
+        // Check if this is a Serper 400 error — retry with sanitized queries
+        if (errorMsg.includes('400') || errorMsg.includes('Bad Request')) {
+          logStructured({
+            timestamp: new Date().toISOString(),
+            stage: 'discovery',
+            level: 'warn',
+            message: `Source "${adapter.name}" got Serper 400 for profile "${profile.targetRole}". Sanitizing queries and retrying once.`,
+            source: adapter.name,
+          });
+
+          try {
+            const sanitizedQueries = profileQueries.map((q) => ({
+              ...q,
+              query: sanitizeForSerper(q.query),
+            }));
+
+            const icp: ICP = {
+              id: profile.id,
+              founderId: profile.founderId,
+              targetRole: profile.targetRole,
+              industry: profile.industry,
+              companyStage: profile.companyStage,
+              geography: profile.geography,
+              customTags: profile.customTags,
+              createdAt: profile.createdAt,
+              updatedAt: profile.updatedAt,
+            };
+
+            const retryResults = adapter.discover
+              ? await adapter.discover(sanitizedQueries, icp)
+              : [];
+            recordRequest(adapter.name);
+
+            const taggedRetryResults = retryResults.map((prospect) => ({
+              ...prospect,
+              discoverySource: prospect.discoverySource || adapter.name,
+            }));
+            profileProspects.push(...taggedRetryResults);
+            recordSuccess(adapter.name);
+
+            logStructured({
+              timestamp: new Date().toISOString(),
+              stage: 'discovery',
+              level: 'info',
+              message: `Serper 400 retry for "${adapter.name}" (profile "${profile.targetRole}") returned ${retryResults.length} results.`,
+              source: adapter.name,
+            });
+            continue;
+          } catch (retryError) {
+            logStructured({
+              timestamp: new Date().toISOString(),
+              stage: 'discovery',
+              level: 'error',
+              message: `Serper 400 retry for "${adapter.name}" (profile "${profile.targetRole}") also failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+              source: adapter.name,
+            });
+          }
+        }
+
         console.error(
           `[DiscoveryEngine] Source "${adapter.name}" failed for profile "${profile.targetRole}":`,
-          error instanceof Error ? error.message : String(error),
+          errorMsg,
         );
         recordFailure(adapter.name);
       }
+    }
+
+    // Persist query history for this profile (graceful — errors logged, not thrown)
+    try {
+      await persistQueryHistory(profileQueries, profile.id);
+    } catch (err) {
+      logStructured({
+        timestamp: new Date().toISOString(),
+        stage: 'discovery',
+        level: 'warn',
+        message: `Failed to persist query history for profile "${profile.targetRole}": ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
 
     // Tag each prospect with the originating icpProfileId

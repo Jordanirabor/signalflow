@@ -6,13 +6,18 @@ import type {
   ExtendedEnrichmentData,
   FieldCorroboration,
   ProspectContext,
+  ResearchAgentCompanyResult,
+  ResearchAgentEmailResult,
   RunCache,
   SourceAdapter,
+  WaterfallStep,
 } from './types';
 
+import { lookupCompanyForProspect, searchEmailForProspect } from '../prospectResearcherService';
 import { scoreConfidence } from './confidenceScorer';
-import { discoverEmail } from './emailDiscovery';
+import { logEnrichmentSummary } from './discoveryLogger';
 import { isSourceAvailable, recordFailure, recordSuccess } from './healthMonitor';
+import { waterfallEmailDiscover } from './waterfallEmailFinder';
 
 // Enrichment source adapters
 import { companyWebsiteScraper } from './companyWebsiteScraper';
@@ -197,6 +202,118 @@ export function mergeEnrichmentResults(results: TaggedResult[]): ExtendedEnrichm
 }
 
 // ---------------------------------------------------------------------------
+// Merge Enrichment With Existing (for retry merging)
+// ---------------------------------------------------------------------------
+
+/** All string fields on ExtendedEnrichmentData for merge purposes */
+const ALL_STRING_FIELDS: (keyof ExtendedEnrichmentData)[] = [
+  'linkedinBio',
+  'companyInfo',
+  'email',
+  'linkedinUrl',
+  'companyDomain',
+  'emailVerificationMethod',
+];
+
+/** All array fields on ExtendedEnrichmentData for merge purposes */
+const ALL_ARRAY_FIELDS: (keyof ExtendedEnrichmentData)[] = [
+  'recentPosts',
+  'dataSources',
+  'failedSources',
+];
+
+/**
+ * Helper to check if a value is considered "non-empty" for merge purposes.
+ */
+function isNonEmpty(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+/**
+ * Merge new enrichment data with existing partial data using priority-based logic.
+ *
+ * Rules:
+ * - New data overrides existing data only when the new value is non-empty/non-null
+ * - Existing non-empty values are always preserved if new data provides empty/null
+ * - For arrays (recentPosts, dataSources, failedSources): merge and deduplicate
+ * - For dataConfidenceScore: take the higher value
+ * - For emailVerified: new value overrides when defined
+ * - For lastVerifiedAt: take the more recent date
+ * - No previously populated field becomes empty after merge
+ */
+export function mergeEnrichmentWithExisting(
+  existing: Partial<ExtendedEnrichmentData>,
+  newData: Partial<ExtendedEnrichmentData>,
+): Partial<ExtendedEnrichmentData> {
+  const merged: Partial<ExtendedEnrichmentData> = { ...existing };
+
+  // Handle string fields: new overrides existing only when new is non-empty
+  for (const field of ALL_STRING_FIELDS) {
+    const newValue = newData[field] as string | undefined;
+    if (isNonEmpty(newValue)) {
+      (merged as Record<string, unknown>)[field] = newValue;
+    }
+    // If new value is empty/null, existing value is preserved (already spread)
+  }
+
+  // Handle array fields: merge and deduplicate
+  for (const field of ALL_ARRAY_FIELDS) {
+    const existingArr = existing[field] as string[] | undefined;
+    const newArr = newData[field] as string[] | undefined;
+
+    if (isNonEmpty(newArr) && isNonEmpty(existingArr)) {
+      // Both have values — combine and deduplicate
+      (merged as Record<string, unknown>)[field] = [
+        ...new Set([...(existingArr as string[]), ...(newArr as string[])]),
+      ];
+    } else if (isNonEmpty(newArr)) {
+      // Only new has values
+      (merged as Record<string, unknown>)[field] = [...(newArr as string[])];
+    }
+    // If only existing has values, it's already preserved from the spread
+  }
+
+  // Handle emailVerified: new overrides when defined
+  if (newData.emailVerified !== undefined && newData.emailVerified !== null) {
+    merged.emailVerified = newData.emailVerified;
+  }
+
+  // Handle dataConfidenceScore: take the higher value
+  if (isNonEmpty(newData.dataConfidenceScore)) {
+    if (
+      !isNonEmpty(existing.dataConfidenceScore) ||
+      newData.dataConfidenceScore! > existing.dataConfidenceScore!
+    ) {
+      merged.dataConfidenceScore = newData.dataConfidenceScore;
+    }
+  }
+
+  // Handle lastVerifiedAt: take the more recent date
+  if (isNonEmpty(newData.lastVerifiedAt)) {
+    if (!isNonEmpty(existing.lastVerifiedAt)) {
+      merged.lastVerifiedAt = newData.lastVerifiedAt;
+    } else {
+      const existingDate =
+        existing.lastVerifiedAt instanceof Date
+          ? existing.lastVerifiedAt
+          : new Date(existing.lastVerifiedAt as unknown as string);
+      const newDate =
+        newData.lastVerifiedAt instanceof Date
+          ? newData.lastVerifiedAt
+          : new Date(newData.lastVerifiedAt as unknown as string);
+      const existingTime = existingDate.getTime();
+      const newTime = newDate.getTime();
+      merged.lastVerifiedAt = newTime > existingTime ? newDate : existingDate;
+    }
+  }
+
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
 // Corroboration Builder
 // ---------------------------------------------------------------------------
 
@@ -259,6 +376,101 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 // ---------------------------------------------------------------------------
+// Research Agent Fallback — Company Resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Use the research agent to find a prospect's company name
+ * when it's missing from the ProspectContext.
+ */
+async function resolveCompanyViaResearchAgent(
+  prospect: ProspectContext,
+): Promise<ResearchAgentCompanyResult> {
+  try {
+    const result = await lookupCompanyForProspect(prospect.name, {
+      role: prospect.role,
+      linkedinUrl: prospect.linkedinUrl,
+      twitterHandle: prospect.twitterHandle,
+    });
+
+    if (result.company) {
+      console.log(
+        `[EnrichmentPipeline] Research agent resolved company for "${prospect.name}": "${result.company}" (source: ${result.source})`,
+      );
+      return {
+        company: result.company,
+        source: result.source === 'content_extraction' ? 'content_extraction' : 'web_search',
+        confidence: result.source === 'content_extraction' ? 'high' : 'medium',
+      };
+    }
+
+    console.log(
+      `[EnrichmentPipeline] Research agent could not resolve company for "${prospect.name}" (source: ${result.source})`,
+    );
+    return { company: null, source: 'web_search', confidence: 'low' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[EnrichmentPipeline] Research agent company lookup failed for "${prospect.name}": ${message}`,
+    );
+    return { company: null, source: 'web_search', confidence: 'low' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Research Agent Fallback — Direct Email Discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Use the research agent to search for a prospect's email
+ * directly via web search when the waterfall fails.
+ */
+async function discoverEmailViaResearchAgent(
+  prospect: ProspectContext,
+  cache: RunCache,
+): Promise<ResearchAgentEmailResult> {
+  try {
+    const result = await searchEmailForProspect(prospect.name, prospect.company);
+
+    if (result.email) {
+      console.log(
+        `[EnrichmentPipeline] Research agent found email for "${prospect.name}": "${result.email}" (source: ${result.source})`,
+      );
+      // Check MX records from cache if available
+      const domain = result.email.split('@')[1];
+      const hasMX = domain ? (cache.getMXRecords(domain) ?? []).length > 0 : false;
+      return {
+        email: result.email,
+        hasMXRecords: hasMX,
+        source: 'research_agent_web_search',
+        confidence: 'medium',
+      };
+    }
+
+    console.log(
+      `[EnrichmentPipeline] Research agent could not find email for "${prospect.name}" (source: ${result.source})`,
+    );
+    return {
+      email: null,
+      hasMXRecords: false,
+      source: 'research_agent_web_search',
+      confidence: 'medium',
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[EnrichmentPipeline] Research agent email search failed for "${prospect.name}": ${message}`,
+    );
+    return {
+      email: null,
+      hasMXRecords: false,
+      source: 'research_agent_web_search',
+      confidence: 'medium',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main Enrichment Function
 // ---------------------------------------------------------------------------
 
@@ -274,6 +486,9 @@ export async function enrichProspect(
 ): Promise<{
   enrichmentData: ExtendedEnrichmentData;
   enrichmentStatus: 'complete' | 'partial' | 'pending';
+  emailDiscoveryMethod: string | null;
+  emailDiscoverySteps: WaterfallStep[];
+  companyResolvedVia?: string;
 }> {
   // 1. Filter to enabled + healthy adapters
   const enabledAdapters = ALL_ENRICHMENT_ADAPTERS.filter(
@@ -291,10 +506,16 @@ export async function enrichProspect(
         lastVerifiedAt: new Date(),
       },
       enrichmentStatus: 'pending',
+      emailDiscoveryMethod: null,
+      emailDiscoverySteps: [],
+      companyResolvedVia: undefined,
     };
   }
 
-  // 2. Execute all adapters concurrently with per-prospect timeout
+  // 2. Track all attempted adapter names for logging
+  const sourcesAttempted = enabledAdapters.map((a) => a.name);
+
+  // 3. Execute all adapters concurrently with per-prospect timeout
   const adapterPromises = enabledAdapters.map((adapter) => {
     const enrichFn = async (): Promise<TaggedResult> => {
       if (!adapter.enrich) {
@@ -309,10 +530,11 @@ export async function enrichProspect(
 
   const settled = await Promise.allSettled(adapterPromises);
 
-  // 3. Separate successes and failures
+  // 4. Separate successes and failures
   const successfulResults: TaggedResult[] = [];
   const dataSources: string[] = [];
   const failedSources: string[] = [];
+  const sourcesFailedReasons: Record<string, string> = {};
 
   for (let i = 0; i < settled.length; i++) {
     const result = settled[i];
@@ -327,16 +549,19 @@ export async function enrichProspect(
       } else {
         // Returned empty — treat as failed for status tracking
         failedSources.push(adapter.name);
+        sourcesFailedReasons[adapter.name] = 'returned empty data';
         console.log(
           `[EnrichmentPipeline] Source "${adapter.name}" returned empty data for "${prospect.name}".`,
         );
       }
     } else {
       failedSources.push(adapter.name);
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      sourcesFailedReasons[adapter.name] = reason;
       recordFailure(adapter.name);
       console.error(
         `[EnrichmentPipeline] Source "${adapter.name}" failed for "${prospect.name}":`,
-        result.reason instanceof Error ? result.reason.message : String(result.reason),
+        reason,
       );
     }
   }
@@ -344,23 +569,88 @@ export async function enrichProspect(
   // 4. Merge results from all successful adapters
   const merged = mergeEnrichmentResults(successfulResults);
 
-  // 5. Email discovery
-  try {
-    const emailResult = await discoverEmail(prospect, cache);
-    if (emailResult.email) {
-      // Only override if we don't already have a verified email from a premium source
-      if (!merged.email || !merged.emailVerified) {
-        merged.email = emailResult.email;
-        merged.emailVerified = emailResult.verified;
-        merged.emailVerificationMethod = emailResult.verificationMethod;
-      }
-      merged.companyDomain = emailResult.companyDomain ?? merged.companyDomain;
+  // 5. Email discovery — research agent first, waterfall as fallback
+  let emailResultStr = 'none';
+  let emailDiscoveryMethod: string | null = null;
+  let emailDiscoverySteps: WaterfallStep[] = [];
+  let companyResolvedVia: string | undefined;
+
+  // 5a. If no company, try research agent to resolve it first
+  if (!prospect.company) {
+    const companyResult = await resolveCompanyViaResearchAgent(prospect);
+    if (companyResult.company) {
+      prospect.company = companyResult.company;
+      companyResolvedVia = 'research_agent';
+      emailDiscoverySteps.push({
+        method: 'research_agent_company',
+        result: 'found',
+        duration_ms: 0,
+      });
+    } else {
+      console.log(
+        `[EnrichmentPipeline] Research agent could not resolve company for "${prospect.name}", enrichment_status will be partial`,
+      );
+      emailDiscoverySteps.push({
+        method: 'research_agent_company',
+        result: 'not_found',
+        duration_ms: 0,
+      });
     }
-  } catch (error) {
-    console.error(
-      '[EnrichmentPipeline] Email discovery failed:',
-      error instanceof Error ? error.message : String(error),
+  }
+
+  // 5b. Research agent direct email search (tries to find real publicly listed emails)
+  const emailAgentResult = await discoverEmailViaResearchAgent(prospect, cache);
+  if (emailAgentResult.email) {
+    merged.email = emailAgentResult.email;
+    merged.emailVerified = false;
+    merged.emailVerificationMethod = 'research_agent_web_search';
+    emailResultStr = emailAgentResult.email;
+    emailDiscoveryMethod = 'research_agent_web_search';
+    emailDiscoverySteps.push({
+      method: 'research_agent_email',
+      result: 'found',
+      email: emailAgentResult.email,
+      duration_ms: 0,
+    });
+    console.log(
+      `[EnrichmentPipeline] Research agent found email for "${prospect.name}": "${emailAgentResult.email}"`,
     );
+  } else {
+    emailDiscoverySteps.push({
+      method: 'research_agent_email',
+      result: 'not_found',
+      duration_ms: 0,
+    });
+
+    // 5c. Waterfall email discovery as fallback (pattern inference, Hunter, Apollo, SMTP)
+    try {
+      const emailResult = await waterfallEmailDiscover(prospect, cache);
+
+      console.log(
+        `[EnrichmentPipeline] Waterfall email discovery for "${prospect.name}": ` +
+          `method=${emailResult.finalMethod ?? 'none'}, verified=${emailResult.verified}, ` +
+          `confidence=${emailResult.confidence}, steps=${emailResult.stepsAttempted.length} ` +
+          `(${emailResult.stepsAttempted.map((s) => `${s.method}:${s.result}`).join(', ')})`,
+      );
+
+      emailDiscoverySteps.push(...emailResult.stepsAttempted);
+
+      if (emailResult.email) {
+        emailResultStr = emailResult.email;
+        emailDiscoveryMethod = emailResult.finalMethod;
+        if (!merged.email || !merged.emailVerified) {
+          merged.email = emailResult.email;
+          merged.emailVerified = emailResult.verified;
+          merged.emailVerificationMethod = emailResult.verificationMethod;
+        }
+        merged.companyDomain = emailResult.companyDomain ?? merged.companyDomain;
+      }
+    } catch (error) {
+      console.error(
+        '[EnrichmentPipeline] Waterfall email discovery failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   // 6. Confidence scoring
@@ -378,10 +668,20 @@ export async function enrichProspect(
     failedSources.length,
   );
 
-  console.log(
-    `[EnrichmentPipeline] Enrichment for "${prospect.name}" complete. ` +
-      `Status: ${enrichmentStatus}, Sources: ${dataSources.length} succeeded, ${failedSources.length} failed.`,
-  );
+  // 9. Log enrichment summary
+  logEnrichmentSummary(prospect.name, {
+    sourcesAttempted,
+    sourcesSucceeded: dataSources,
+    sourcesFailed: sourcesFailedReasons,
+    emailResult: emailResultStr,
+    confidenceScore: merged.dataConfidenceScore ?? 0,
+  });
 
-  return { enrichmentData: merged, enrichmentStatus };
+  return {
+    enrichmentData: merged,
+    enrichmentStatus,
+    emailDiscoveryMethod,
+    emailDiscoverySteps,
+    companyResolvedVia,
+  };
 }

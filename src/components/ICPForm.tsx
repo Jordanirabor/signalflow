@@ -152,17 +152,16 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
       <Card>
         <CardHeader>
           <CardTitle>
-            Generate ICP from Your Product{selectedProject ? ` — ${selectedProject.name}` : ''}
+            Generate ICP from Your Offering{selectedProject ? ` — ${selectedProject.name}` : ''}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Describe what your product does and who it helps. The AI will generate multiple ideal
-            customer profiles targeting different buyer personas.
+            Describe what you've created and are ready to share with the world
           </p>
           <div className="space-y-2">
             <label htmlFor="icp-productDesc" className="text-sm font-medium">
-              Product Description
+              Your Offering
             </label>
             <Textarea
               id="icp-productDesc"
@@ -176,7 +175,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
             onClick={handleGenerate}
             disabled={generating || confirming || !productDescription.trim()}
           >
-            {generating ? 'Generating ICPs...' : 'Generate ICP with AI'}
+            {generating ? 'Generating...' : 'Generate ICP'}
           </Button>
         </CardContent>
       </Card>

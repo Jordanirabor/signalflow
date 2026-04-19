@@ -106,12 +106,13 @@ export async function researchAndGenerate(
   messageRequest: MessageRequest,
   enrichedICP: EnrichedICP,
   onProgress?: (progress: AutoResearchProgress) => void,
+  senderName?: string,
 ): Promise<AutoResearchResult> {
   const timeout = createTimeout(TOTAL_TIMEOUT_MS);
 
   try {
     const result = await Promise.race([
-      executeWorkflow(lead, messageRequest, enrichedICP, onProgress),
+      executeWorkflow(lead, messageRequest, enrichedICP, onProgress, senderName),
       timeout.promise,
     ]);
     return result;
@@ -120,7 +121,12 @@ export async function researchAndGenerate(
     reportProgress(onProgress, 'failed', 0, 'Research failed, generating with limited data');
 
     try {
-      const fallbackMessage = await generateFallbackMessage(lead, messageRequest, enrichedICP);
+      const fallbackMessage = await generateFallbackMessage(
+        lead,
+        messageRequest,
+        enrichedICP,
+        senderName,
+      );
       const emptyProfile = buildEmptyResearchProfile(lead.id);
       return {
         researchProfile: emptyProfile,
@@ -143,6 +149,7 @@ async function executeWorkflow(
   messageRequest: MessageRequest,
   enrichedICP: EnrichedICP,
   onProgress?: (progress: AutoResearchProgress) => void,
+  senderName?: string,
 ): Promise<AutoResearchResult> {
   let researchProfile: ResearchProfile | null = null;
   let researchWasRefreshed = false;
@@ -197,10 +204,11 @@ async function executeWorkflow(
       tone: messageRequest.tone,
       productContext: messageRequest.productContext,
       personalizationContext,
+      senderName,
     });
   } else {
     // Fallback: generate with Enriched ICP + basic lead info only
-    message = await generateFallbackMessage(lead, messageRequest, enrichedICP);
+    message = await generateFallbackMessage(lead, messageRequest, enrichedICP, senderName);
     researchProfile = buildEmptyResearchProfile(lead.id);
   }
 
@@ -225,6 +233,7 @@ async function generateFallbackMessage(
   lead: Lead,
   messageRequest: MessageRequest,
   enrichedICP: EnrichedICP,
+  senderName?: string,
 ): Promise<EnhancedMessageResponse> {
   return generateEnhancedMessage({
     leadName: lead.name,
@@ -234,6 +243,7 @@ async function generateFallbackMessage(
     messageType: messageRequest.messageType,
     tone: messageRequest.tone,
     productContext: messageRequest.productContext,
+    senderName,
     // No personalizationContext → triggers limitedPersonalization path
   });
 }

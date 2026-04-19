@@ -33,7 +33,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
         >
           <Menu />
         </Button>
-        <span className="text-lg font-semibold md:hidden">SignalFlow</span>
+        <span className="text-lg font-semibold md:hidden">Moatify</span>
       </div>
 
       <div className="ml-auto">

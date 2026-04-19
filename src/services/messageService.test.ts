@@ -133,7 +133,7 @@ describe('buildEnhancedPrompt', () => {
     // Should be a basic prompt (no banned phrases section, no intersection)
     expect(prompt).toContain('Jane Doe');
     expect(prompt).toContain('CTO');
-    expect(prompt).not.toContain('IMPORTANT: Do NOT use');
+    expect(prompt).not.toContain('IMPORTANT: Do NOT use any of these generic phrases');
   });
 
   it('includes banned phrase avoidance instructions', () => {

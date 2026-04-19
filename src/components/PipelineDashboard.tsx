@@ -1,20 +1,20 @@
 'use client';
 
+import { RunScopeSelector, type RunScopeSelection } from '@/components/RunScopeSelector';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useProject } from '@/contexts/ProjectContext';
 import { useSession } from '@/hooks/useSession';
-import type { PipelineMetrics, PipelineStatus } from '@/types';
+import { formatICPProfileLabel } from '@/lib/icpProfileLabel';
+import type { ICPProfile, ICPProject, PipelineMetrics, PipelineRun, PipelineStatus } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const POLL_INTERVAL_MS = 5000;
 
 export default function PipelineDashboard() {
   const { session, isLoading: sessionLoading } = useSession();
-  const { selectedProjectId } = useProject();
   const [metrics, setMetrics] = useState<PipelineMetrics | null>(null);
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,6 +24,9 @@ export default function PipelineDashboard() {
     null,
   );
   const [hasICP, setHasICP] = useState<boolean | null>(null);
+  const [runScope, setRunScope] = useState<RunScopeSelection>({ scope: 'all' });
+  const [runHistory, setRunHistory] = useState<PipelineRun[]>([]);
+  const [profilesMap, setProfilesMap] = useState<Record<string, ICPProfile>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(
@@ -32,10 +35,16 @@ export default function PipelineDashboard() {
       if (!isPolling) setLoading(true);
       setError(null);
       try {
-        const [metricsRes, statusRes, icpRes] = await Promise.all([
-          fetch('/api/pipeline/metrics'),
+        let metricsUrl = '/api/pipeline/metrics';
+        if (runScope.scope === 'profile' && runScope.icpProfileId) {
+          metricsUrl = `/api/pipeline/metrics?icpProfileId=${runScope.icpProfileId}`;
+        }
+
+        const [metricsRes, statusRes, icpRes, runsRes] = await Promise.all([
+          fetch(metricsUrl),
           fetch('/api/pipeline/status'),
           !isPolling ? fetch('/api/icp/profiles') : Promise.resolve(null),
+          !isPolling ? fetch('/api/pipeline/runs?limit=10') : Promise.resolve(null),
         ]);
 
         if (!metricsRes.ok) {
@@ -49,7 +58,7 @@ export default function PipelineDashboard() {
           return;
         }
 
-        // Check if ICP profiles exist
+        // Check if ICP profiles exist and build profiles map
         if (icpRes && icpRes.ok) {
           const icpData = await icpRes.json();
           const profiles = icpData?.profiles ?? icpData ?? [];
@@ -58,6 +67,20 @@ export default function PipelineDashboard() {
               ? profiles.some((p: { isActive?: boolean }) => p.isActive !== false)
               : false,
           );
+          // Build a map of profile id -> profile for label display
+          if (Array.isArray(profiles)) {
+            const map: Record<string, ICPProfile> = {};
+            for (const p of profiles) {
+              if (p.id) map[p.id] = p;
+            }
+            setProfilesMap(map);
+          }
+        }
+
+        // Parse run history
+        if (runsRes && runsRes.ok) {
+          const runsData: PipelineRun[] = await runsRes.json();
+          setRunHistory(Array.isArray(runsData) ? runsData : []);
         }
 
         const metricsData: PipelineMetrics = await metricsRes.json();
@@ -85,7 +108,7 @@ export default function PipelineDashboard() {
         if (!isPolling) setLoading(false);
       }
     },
-    [session],
+    [session, runScope],
   );
 
   // Poll while there's an active run (server-driven)
@@ -160,14 +183,35 @@ export default function PipelineDashboard() {
   const handleManualRun = useCallback(async () => {
     setActionLoading('run');
     try {
-      // Fire-and-forget: don't await the full pipeline run
-      fetch('/api/pipeline/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: selectedProjectId }),
-      }).catch(() => {
-        // Errors will be picked up by polling
-      });
+      const fireRun = (body: Record<string, string>) => {
+        fetch('/api/pipeline/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).catch(() => {
+          // Errors will be picked up by polling
+        });
+      };
+
+      if (runScope.scope === 'all') {
+        // Fetch active projects and fire a run for each
+        try {
+          const res = await fetch('/api/projects');
+          if (res.ok) {
+            const projects: ICPProject[] = await res.json();
+            const active = projects.filter((p) => !p.isDeleted && p.isActive);
+            for (const project of active) {
+              fireRun({ projectId: project.id });
+            }
+          }
+        } catch {
+          // Errors will be picked up by polling
+        }
+      } else if (runScope.scope === 'project' && runScope.projectId) {
+        fireRun({ projectId: runScope.projectId });
+      } else if (runScope.scope === 'profile' && runScope.projectId && runScope.icpProfileId) {
+        fireRun({ projectId: runScope.projectId, icpProfileId: runScope.icpProfileId });
+      }
 
       // Give the server a moment to create the pipeline_run record, then refresh
       await new Promise((r) => setTimeout(r, 1500));
@@ -175,7 +219,7 @@ export default function PipelineDashboard() {
     } finally {
       setActionLoading(null);
     }
-  }, [fetchData, selectedProjectId]);
+  }, [fetchData, runScope]);
 
   function formatTimestamp(date?: Date | string): string {
     if (!date) return '—';
@@ -199,6 +243,13 @@ export default function PipelineDashboard() {
       default:
         return 'outline';
     }
+  }
+
+  function getRunProfileLabel(run?: PipelineRun): string {
+    if (!run?.icpProfileId) return 'All Profiles';
+    const profile = profilesMap[run.icpProfileId];
+    if (profile) return formatICPProfileLabel(profile);
+    return 'All Profiles';
   }
 
   if (sessionLoading || loading) {
@@ -268,6 +319,11 @@ export default function PipelineDashboard() {
             <span className="text-sm text-muted-foreground">
               Last run: {formatTimestamp(status.lastRun?.completedAt ?? status.lastRun?.startedAt)}
             </span>
+            {status.lastRun && (
+              <span className="text-sm text-muted-foreground">
+                Profile: {getRunProfileLabel(status.lastRun)}
+              </span>
+            )}
             {!hasActiveRun && (
               <span className="text-sm text-muted-foreground">
                 Next run: {formatTimestamp(status.nextRunAt)}
@@ -365,12 +421,16 @@ export default function PipelineDashboard() {
                 {actionLoading === 'resume' ? 'Resuming...' : 'Resume Pipeline'}
               </Button>
             )}
+            <RunScopeSelector
+              founderId={session!.founderId}
+              value={runScope}
+              onChange={setRunScope}
+              disabled={actionLoading !== null || hasActiveRun}
+            />
             <Button
               variant="secondary"
               onClick={handleManualRun}
-              disabled={
-                actionLoading !== null || hasActiveRun || hasICP === false || !selectedProjectId
-              }
+              disabled={actionLoading !== null || hasActiveRun || hasICP === false}
             >
               {hasActiveRun
                 ? 'Pipeline Running...'
@@ -381,6 +441,49 @@ export default function PipelineDashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Run History */}
+      {runHistory.length > 0 && (
+        <Card aria-label="Pipeline run history">
+          <CardHeader>
+            <CardTitle>Run History</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {runHistory
+                .filter((run) => {
+                  if (runScope.scope === 'profile' && runScope.icpProfileId) {
+                    return run.icpProfileId === runScope.icpProfileId;
+                  }
+                  if (runScope.scope === 'project' && runScope.projectId) {
+                    return run.projectId === runScope.projectId;
+                  }
+                  return true;
+                })
+                .map((run) => (
+                  <div
+                    key={run.id}
+                    className="flex flex-wrap items-center gap-3 rounded border p-2 text-sm"
+                  >
+                    <Badge variant={statusBadgeVariant(run.status)}>
+                      {run.status.charAt(0).toUpperCase() + run.status.slice(1)}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {formatTimestamp(run.completedAt ?? run.startedAt)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Profile: {getRunProfileLabel(run)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {run.prospectsDiscovered} discovered · {run.messagesSent} sent ·{' '}
+                      {run.repliesProcessed} replies · {run.meetingsBooked} meetings
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

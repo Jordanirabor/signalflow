@@ -1,5 +1,5 @@
 // ============================================================
-// SignalFlow GTM Intelligence Engine — Shared Types & Interfaces
+// Moatify — Shared Types & Interfaces
 // ============================================================
 
 // --- CRM Status ---
@@ -44,6 +44,8 @@ export interface ICPProject {
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  valueProposition: string;
+  targetPainPoints: string[];
 }
 
 // --- ICP Profile (Multi-ICP) ---
@@ -94,7 +96,8 @@ export interface EnrichmentData {
     | 'pattern_inference'
     | 'github_commit'
     | 'website_scrape'
-    | 'press_release';
+    | 'press_release'
+    | 'research_agent_web_search';
   linkedinUrl?: string;
   companyDomain?: string;
   dataConfidenceScore?: number; // 0.0 to 1.0
@@ -126,6 +129,7 @@ export interface Lead {
   correlationScore?: number;
   correlationFlag?: string;
   icpProfileId?: string;
+  steeringContext?: string;
 }
 
 // --- Scoring Service ---
@@ -170,6 +174,7 @@ export interface OutreachRecord {
   outreachDate: Date;
   isFollowUp: boolean;
   createdAt: Date;
+  smtpMessageId?: string;
 }
 
 // --- CRM Pipeline ---
@@ -227,7 +232,7 @@ export interface ThrottleStatus {
 // --- Message Generator ---
 
 export type MessageType = 'cold_email' | 'cold_dm';
-export type TonePreference = 'professional' | 'casual' | 'direct';
+export type TonePreference = 'warm' | 'professional' | 'casual' | 'direct' | 'bold';
 
 export interface MessageRequest {
   leadId: string;
@@ -238,6 +243,7 @@ export interface MessageRequest {
 
 export interface MessageResponse {
   message: string;
+  subjectLine: string;
   personalizationDetails: string[];
   limitedPersonalization: boolean;
 }
@@ -279,6 +285,7 @@ export interface PipelineRun {
   id: string;
   founderId: string;
   projectId?: string;
+  icpProfileId?: string;
   status: 'running' | 'completed' | 'failed' | 'partial';
   stagesCompleted: string[];
   stageErrors: Record<string, string>;
@@ -286,6 +293,7 @@ export interface PipelineRun {
   messagesSent: number;
   repliesProcessed: number;
   meetingsBooked: number;
+  enrichmentsRetried: number;
   startedAt: Date;
   completedAt?: Date;
 }
@@ -314,6 +322,8 @@ export interface PipelineConfig {
   productContext: string;
   valueProposition: string;
   targetPainPoints: string[];
+  globalSteering: string;
+  strategyScope: 'global' | 'per_project';
 }
 
 // --- Email Integration ---
@@ -322,7 +332,8 @@ export interface EmailConnection {
   id: string;
   founderId: string;
   email: string;
-  provider: 'gmail';
+  provider: 'gmail' | 'smtp_imap';
+  activeProvider: 'gmail' | 'smtp_imap';
   accessToken: string;
   refreshToken: string;
   tokenExpiresAt: Date;
@@ -348,6 +359,11 @@ export interface IncomingReply {
   classificationConfidence?: number;
   requiresManualReview: boolean;
   processedAt?: Date;
+  imapUid?: number;
+  rawHeaders?: Record<string, string>;
+  messageId?: string;
+  inReplyTo?: string;
+  referencesHeader?: string[];
 }
 
 // --- Calendar Integration ---
@@ -456,6 +472,7 @@ export interface ConversationThread {
   leadId: string;
   leadName: string;
   company: string;
+  email?: string;
   messages: ConversationMessage[];
 }
 
@@ -464,6 +481,8 @@ export interface ConversationMessage {
   direction: 'outbound' | 'inbound';
   content: string;
   timestamp: Date;
+  channel?: 'email' | 'dm';
+  isFollowUp?: boolean;
   classification?: ResponseClassification;
   confidence?: number;
 }
@@ -590,4 +609,40 @@ export interface ContentSummary {
   opinions: string[]; // 0–3 items
   topics: string[]; // 1–5 items
   sourceUrl: string; // Original page URL
+}
+
+// ============================================================
+// SMTP/IMAP Email Pipeline — Types & Interfaces
+// ============================================================
+
+export interface EmailProviderConfig {
+  id: string;
+  founderId: string;
+  providerType: 'smtp_imap';
+  smtpHost: string;
+  smtpPort: number;
+  smtpUsername: string;
+  smtpEncryption: 'tls' | 'starttls' | 'none';
+  fromEmail: string;
+  fromName: string;
+  replyToEmail?: string;
+  imapHost: string;
+  imapPort: number;
+  imapUsername: string;
+  imapEncryption: 'tls' | 'starttls' | 'none';
+  watchedFolders: string[];
+  pollIntervalMinutes: number;
+  smtpVerified: boolean;
+  imapVerified: boolean;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ImapPollingState {
+  id: string;
+  founderId: string;
+  folderName: string;
+  lastSeenUid: number;
+  lastPollAt?: Date;
 }

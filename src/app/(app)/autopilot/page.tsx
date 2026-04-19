@@ -4,6 +4,7 @@ import CalendarIntegrationSetup from '@/components/CalendarIntegrationSetup';
 import CalendarWeekView from '@/components/CalendarWeekView';
 import ConversationView from '@/components/ConversationView';
 import EmailIntegrationSetup from '@/components/EmailIntegrationSetup';
+import EmailProviderSettings from '@/components/EmailProviderSettings';
 import ManualReviewQueue from '@/components/ManualReviewQueue';
 import PipelineConfiguration from '@/components/PipelineConfiguration';
 import PipelineDashboard from '@/components/PipelineDashboard';
@@ -44,6 +45,7 @@ export default function AutopilotPage() {
       <TabsContent value="integrations">
         <div className="space-y-8">
           <CalendarIntegrationSetup />
+          <EmailProviderSettings />
           <EmailIntegrationSetup />
         </div>
       </TabsContent>

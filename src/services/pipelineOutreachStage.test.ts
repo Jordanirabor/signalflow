@@ -17,9 +17,6 @@ vi.mock('@/services/icpProfileService', () => ({
 vi.mock('@/services/scoringService', () => ({
   calculateLeadScoreV2: vi.fn(),
 }));
-vi.mock('@/services/enrichmentService', () => ({
-  enrichLead: vi.fn(),
-}));
 vi.mock('@/services/discovery/discoveryEngine', () => ({
   discoverLeadsMultiICP: vi.fn().mockResolvedValue({ prospects: [], profileResults: new Map() }),
 }));
@@ -46,6 +43,7 @@ vi.mock('@/services/bookingAgentService', () => ({
 }));
 vi.mock('@/services/messageService', () => ({
   generateMessage: vi.fn(),
+  generateMessageWithResearchFallback: vi.fn(),
 }));
 vi.mock('@/services/outreachService', () => ({
   getOutreachHistory: vi.fn().mockResolvedValue([]),
@@ -67,10 +65,35 @@ vi.mock('@/services/throttleService', () => ({
   canRecordOutreach: vi.fn(),
 }));
 
+vi.mock('@/services/correlationEngineService', () => ({
+  scoreAndStoreCorrelation: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('@/services/prospectResearcherService', () => ({
+  getResearchProfile: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('@/services/discovery/discoveryLogger', () => ({
+  logStructured: vi.fn(),
+  logPipelineRunSummary: vi.fn(),
+  logDiscoverySummary: vi.fn(),
+  logEnrichmentSummary: vi.fn(),
+}));
+vi.mock('@/services/discovery/enrichmentPipeline', () => ({
+  enrichProspect: vi.fn().mockResolvedValue({ enrichmentData: {}, enrichmentStatus: 'pending' }),
+  mergeEnrichmentWithExisting: vi
+    .fn()
+    .mockImplementation((existing, newData) => ({ ...existing, ...newData })),
+}));
+vi.mock('@/services/discovery/runCache', () => ({
+  createRunCache: vi.fn().mockReturnValue({}),
+}));
+vi.mock('@/services/enrichmentService', () => ({
+  enrichLead: vi.fn().mockResolvedValue({ enrichmentData: {}, enrichmentStatus: 'complete' }),
+}));
+
 import { query } from '@/lib/db';
 import { changeLeadStatus } from '@/services/crmService';
 import { sendEmail } from '@/services/emailIntegrationService';
-import { generateMessage } from '@/services/messageService';
+import { generateMessage, generateMessageWithResearchFallback } from '@/services/messageService';
 import { recordOutreach } from '@/services/outreachService';
 import { getPipelineConfig } from '@/services/pipelineConfigService';
 import { runAllChecks } from '@/services/qualityGateService';
@@ -81,12 +104,14 @@ const mockedQuery = vi.mocked(query);
 const mockedGetPipelineConfig = vi.mocked(getPipelineConfig);
 const mockedCanRecordOutreach = vi.mocked(canRecordOutreach);
 const mockedGenerateMessage = vi.mocked(generateMessage);
+const mockedGenerateMessageWithResearchFallback = vi.mocked(generateMessageWithResearchFallback);
 const mockedRunAllChecks = vi.mocked(runAllChecks);
 const mockedSendEmail = vi.mocked(sendEmail);
 const mockedRecordOutreach = vi.mocked(recordOutreach);
 const mockedChangeLeadStatus = vi.mocked(changeLeadStatus);
 
 const FOUNDER_ID = 'f-1';
+const PROJECT_ID = 'proj-1';
 
 const defaultConfig = {
   founderId: FOUNDER_ID,
@@ -113,17 +138,38 @@ function runRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'run-1',
     founder_id: FOUNDER_ID,
+    project_id: PROJECT_ID,
     status: 'completed',
-    stages_completed: ['discovery', 'outreach', 'follow_up', 'inbox', 'booking'],
+    stages_completed: [
+      'enrichment_retry',
+      'discovery',
+      'outreach',
+      'follow_up',
+      'inbox',
+      'booking',
+    ],
     stage_errors: {},
     prospects_discovered: 0,
     messages_sent: 0,
     replies_processed: 0,
     meetings_booked: 0,
+    enrichments_retried: 0,
     started_at: new Date(),
     completed_at: new Date(),
     ...overrides,
   };
+}
+
+/**
+ * Helper: prepend the standard stale-run-check + INSERT + enrichment_retry + discovery queries
+ * that executePipelineRun now issues before reaching the outreach stage.
+ */
+function prependPipelineSetupMocks() {
+  mockedQuery
+    .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
+    .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+    .mockResolvedValueOnce(dbResult([])) // enrichment_retry: SELECT leads (none eligible)
+    .mockResolvedValueOnce(dbResult([{ count: '0' }])); // discovery: SELECT count (daily cap) — no profiles so 0 discovered
 }
 
 beforeEach(() => {
@@ -156,7 +202,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     };
 
     mockedCanRecordOutreach.mockResolvedValue(true);
-    mockedGenerateMessage.mockResolvedValue({
+    mockedGenerateMessageWithResearchFallback.mockResolvedValue({
       message: 'Hi Jane, great work at Acme. Tech leader',
       personalizationDetails: ['LinkedIn bio: Tech leader'],
       limitedPersonalization: false,
@@ -178,7 +224,10 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     });
 
     mockedQuery
+      .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
       .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+      .mockResolvedValueOnce(dbResult([])) // enrichment_retry: SELECT leads (none eligible)
+      // discovery: getActiveProfiles returns [] so no DB queries
       .mockResolvedValueOnce(dbResult([leadRow])) // outreach: SELECT leads
       .mockResolvedValueOnce(dbResult([])) // outreach: UPDATE outreach_record gmail ids
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
@@ -188,9 +237,9 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ messages_sent: 1 })])); // UPDATE pipeline_run
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
-    expect(mockedGenerateMessage).toHaveBeenCalledTimes(1);
+    expect(mockedGenerateMessageWithResearchFallback).toHaveBeenCalledTimes(1);
     expect(mockedRunAllChecks).toHaveBeenCalledTimes(1);
     expect(mockedSendEmail).toHaveBeenCalledWith(
       FOUNDER_ID,
@@ -226,7 +275,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     };
 
     mockedCanRecordOutreach.mockResolvedValue(true);
-    mockedGenerateMessage.mockResolvedValue({
+    mockedGenerateMessageWithResearchFallback.mockResolvedValue({
       message: 'Generic message',
       personalizationDetails: [],
       limitedPersonalization: true,
@@ -237,7 +286,10 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     });
 
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
+      .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
+      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+      .mockResolvedValueOnce(dbResult([])) // enrichment_retry: SELECT leads (none eligible)
+      // discovery: getActiveProfiles returns [] so no DB queries
       .mockResolvedValueOnce(dbResult([leadRow])) // outreach: SELECT leads
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
       .mockResolvedValueOnce(dbResult([])) // booking: SELECT replied leads (empty)
@@ -246,7 +298,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ messages_sent: 0 })])); // UPDATE pipeline_run
 
-    const result = await executePipelineRun(FOUNDER_ID);
+    const result = await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     expect(mockedSendEmail).not.toHaveBeenCalled();
     expect(mockedChangeLeadStatus).not.toHaveBeenCalled();
@@ -280,7 +332,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
 
     // Allow first, deny second
     mockedCanRecordOutreach.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    mockedGenerateMessage.mockResolvedValue({
+    mockedGenerateMessageWithResearchFallback.mockResolvedValue({
       message: 'Hello Bio',
       personalizationDetails: ['LinkedIn bio: Bio'],
       limitedPersonalization: false,
@@ -299,7 +351,10 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     });
 
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
+      .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
+      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+      .mockResolvedValueOnce(dbResult([])) // enrichment_retry: SELECT leads (none eligible)
+      // discovery: getActiveProfiles returns [] so no DB queries
       .mockResolvedValueOnce(dbResult(leads)) // outreach: SELECT leads
       .mockResolvedValueOnce(dbResult([])) // UPDATE outreach_record gmail ids
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
@@ -309,7 +364,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ messages_sent: 1 })])); // UPDATE pipeline_run
 
-    const promise = executePipelineRun(FOUNDER_ID);
+    const promise = executePipelineRun(FOUNDER_ID, PROJECT_ID);
     await vi.advanceTimersByTimeAsync(120_000);
     const result = await promise;
 
@@ -332,7 +387,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     };
 
     mockedCanRecordOutreach.mockResolvedValue(true);
-    mockedGenerateMessage.mockResolvedValue({
+    mockedGenerateMessageWithResearchFallback.mockResolvedValue({
       message: 'Hi Bio',
       personalizationDetails: ['Bio'],
       limitedPersonalization: false,
@@ -351,7 +406,10 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
     });
 
     mockedQuery
-      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })]))
+      .mockResolvedValueOnce(dbResult([])) // SELECT stale runs (none)
+      .mockResolvedValueOnce(dbResult([runRow({ status: 'running' })])) // INSERT pipeline_run
+      .mockResolvedValueOnce(dbResult([])) // enrichment_retry: SELECT leads (none eligible)
+      // discovery: getActiveProfiles returns [] so no DB queries
       .mockResolvedValueOnce(dbResult([leadRow])) // outreach: SELECT leads
       .mockResolvedValueOnce(dbResult([])) // UPDATE outreach_record gmail ids
       .mockResolvedValueOnce(dbResult([])) // follow_up: SELECT leads (empty)
@@ -361,7 +419,7 @@ describe('executeOutreachStage (via executePipelineRun)', () => {
       .mockResolvedValueOnce(dbResult([{ count: '0' }])) // booking: SELECT COUNT confirmed
       .mockResolvedValueOnce(dbResult([runRow({ messages_sent: 1 })])); // UPDATE pipeline_run
 
-    await executePipelineRun(FOUNDER_ID);
+    await executePipelineRun(FOUNDER_ID, PROJECT_ID);
 
     // Verify the UPDATE outreach_record query was called with gmail IDs
     const updateCall = mockedQuery.mock.calls.find(

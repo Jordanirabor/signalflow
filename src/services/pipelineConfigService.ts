@@ -21,6 +21,8 @@ interface PipelineConfigRow {
   product_context: string;
   value_proposition: string;
   target_pain_points: string[];
+  global_steering: string;
+  strategy_scope: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -40,10 +42,12 @@ const DEFAULTS: PipelineConfig = {
   minLeadScore: 10,
   maxFollowUps: 3,
   sequenceCadenceDays: [3, 5, 7],
-  tonePreference: 'professional',
+  tonePreference: 'warm',
   productContext: '',
   valueProposition: '',
   targetPainPoints: [],
+  globalSteering: '',
+  strategyScope: 'global',
 };
 
 // ---------------------------------------------------------------------------
@@ -125,6 +129,8 @@ function mapConfigRow(row: PipelineConfigRow): PipelineConfig {
     productContext: row.product_context,
     valueProposition: row.value_proposition,
     targetPainPoints: row.target_pain_points,
+    globalSteering: row.global_steering,
+    strategyScope: row.strategy_scope as 'global' | 'per_project',
   };
 }
 
@@ -140,7 +146,7 @@ export async function getPipelineConfig(founderId: string): Promise<PipelineConf
     `SELECT id, founder_id, run_interval_minutes, business_hours_start, business_hours_end,
             business_days, timezone, daily_discovery_cap, min_lead_score, max_follow_ups,
             sequence_cadence_days, tone_preference, product_context, value_proposition,
-            target_pain_points, created_at, updated_at
+            target_pain_points, global_steering, strategy_scope, created_at, updated_at
      FROM pipeline_config WHERE founder_id = $1`,
     [founderId],
   );
@@ -161,19 +167,20 @@ export async function savePipelineConfig(config: PipelineConfig): Promise<Pipeli
        founder_id, run_interval_minutes, business_hours_start, business_hours_end,
        business_days, timezone, daily_discovery_cap, min_lead_score, max_follow_ups,
        sequence_cadence_days, tone_preference, product_context, value_proposition,
-       target_pain_points
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       target_pain_points, global_steering, strategy_scope
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      ON CONFLICT (founder_id)
      DO UPDATE SET
        run_interval_minutes = $2, business_hours_start = $3, business_hours_end = $4,
        business_days = $5, timezone = $6, daily_discovery_cap = $7, min_lead_score = $8,
        max_follow_ups = $9, sequence_cadence_days = $10, tone_preference = $11,
        product_context = $12, value_proposition = $13, target_pain_points = $14,
+       global_steering = $15, strategy_scope = $16,
        updated_at = NOW()
      RETURNING id, founder_id, run_interval_minutes, business_hours_start, business_hours_end,
                business_days, timezone, daily_discovery_cap, min_lead_score, max_follow_ups,
                sequence_cadence_days, tone_preference, product_context, value_proposition,
-               target_pain_points, created_at, updated_at`,
+               target_pain_points, global_steering, strategy_scope, created_at, updated_at`,
     [
       config.founderId,
       config.runIntervalMinutes,
@@ -189,6 +196,8 @@ export async function savePipelineConfig(config: PipelineConfig): Promise<Pipeli
       config.productContext,
       config.valueProposition,
       config.targetPainPoints,
+      config.globalSteering,
+      config.strategyScope,
     ],
   );
 

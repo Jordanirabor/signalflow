@@ -29,22 +29,18 @@ export async function POST(request: NextRequest) {
   if (!body.name || body.name.trim() === '') {
     return validationError('name is required', { name: 'missing' });
   }
-  if (!body.role || body.role.trim() === '') {
-    return validationError('role is required', { role: 'missing' });
-  }
-  if (!body.company || body.company.trim() === '') {
-    return validationError('company is required', { company: 'missing' });
-  }
 
   const founderId = session.founderId;
 
   try {
-    // Proactive duplicate check
-    const existing = await findDuplicate(founderId, body.name, body.company);
-    if (existing) {
-      return duplicateError('A lead with this name and company already exists', {
-        existingLeadId: existing.id,
-      });
+    // Proactive duplicate check (only when company is provided)
+    if (body.company?.trim()) {
+      const existing = await findDuplicate(founderId, body.name, body.company);
+      if (existing) {
+        return duplicateError('A lead with this name and company already exists', {
+          existingLeadId: existing.id,
+        });
+      }
     }
 
     // Score the lead if an ICP exists
@@ -55,8 +51,8 @@ export async function POST(request: NextRequest) {
     if (icp) {
       const result = calculateLeadScore({
         lead: {
-          role: body.role,
-          company: body.company,
+          role: body.role ?? '',
+          company: body.company ?? '',
           industry: body.industry,
           geography: body.geography,
           enrichmentData: undefined,
@@ -83,7 +79,9 @@ export async function POST(request: NextRequest) {
   } catch (err: unknown) {
     // Catch unique constraint violation (race condition fallback)
     if (isUniqueViolation(err)) {
-      const existing = await findDuplicate(founderId, body.name, body.company);
+      const existing = body.company?.trim()
+        ? await findDuplicate(founderId, body.name, body.company)
+        : null;
       return duplicateError('A lead with this name and company already exists', {
         existingLeadId: existing?.id ?? 'unknown',
       });
@@ -92,8 +90,10 @@ export async function POST(request: NextRequest) {
   }
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
- * GET /api/leads?minScore=<number>&sortBy=<score|created>&projectId=<uuid>
+ * GET /api/leads?minScore=<number>&sortBy=<score|created>&projectId=<uuid>&icpProfileId=<uuid>
  * List leads with optional filters. Default sort: leadScore DESC.
  *
  * Requirements: 2.2, 3.1, 3.2, 3.3, 3.4, 7.2
@@ -107,6 +107,7 @@ export async function GET(request: NextRequest) {
   const minScoreParam = request.nextUrl.searchParams.get('minScore');
   const sortBy = request.nextUrl.searchParams.get('sortBy') as 'score' | 'created' | null;
   const projectId = request.nextUrl.searchParams.get('projectId') || undefined;
+  const icpProfileId = request.nextUrl.searchParams.get('icpProfileId') || undefined;
 
   let minScore: number | undefined;
   if (minScoreParam !== null) {
@@ -116,12 +117,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  if (icpProfileId && !UUID_REGEX.test(icpProfileId)) {
+    return validationError('icpProfileId must be a valid UUID');
+  }
+
   try {
     const leads = await listLeads({
       founderId: session.founderId,
       minScore,
       sortBy: sortBy ?? undefined,
       projectId,
+      icpProfileId,
     });
     return NextResponse.json(leads);
   } catch {

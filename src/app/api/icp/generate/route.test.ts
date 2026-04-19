@@ -134,7 +134,7 @@ describe('POST /api/icp/generate', () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toBe('VALIDATION_ERROR');
-    expect(json.details?.productDescription).toBe('missing');
+    expect(json.details?.description).toBe('missing');
   });
 
   it('returns 400 when productDescription is empty string', async () => {

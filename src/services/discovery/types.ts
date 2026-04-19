@@ -25,7 +25,8 @@ export interface ExtendedEnrichmentData extends EnrichmentData {
     | 'pattern_inference'
     | 'github_commit'
     | 'website_scrape'
-    | 'press_release';
+    | 'press_release'
+    | 'research_agent_web_search';
   linkedinUrl?: string;
   companyDomain?: string;
   dataConfidenceScore?: number;
@@ -238,4 +239,114 @@ export interface SourceConfig {
 
   // Daily budgets
   dailyBudgetPerSource: number;
+}
+
+// ---------------------------------------------------------------------------
+// AI Result Parser — Parsed Lead
+// ---------------------------------------------------------------------------
+
+export interface ParsedLead {
+  name: string;
+  role: string;
+  company: string;
+  linkedinUrl?: string;
+  companyDomain?: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+// ---------------------------------------------------------------------------
+// Waterfall Email Discovery
+// ---------------------------------------------------------------------------
+
+export interface WaterfallStep {
+  method:
+    | 'web_search'
+    | 'pattern_inference'
+    | 'hunter_api'
+    | 'apollo_api'
+    | 'smtp_verification'
+    | 'research_agent_company'
+    | 'research_agent_email';
+  result: 'found' | 'not_found' | 'error';
+  email?: string;
+  verified?: boolean;
+  duration_ms: number;
+  error?: string;
+}
+
+export interface WaterfallEmailResult extends EmailDiscoveryResult {
+  stepsAttempted: WaterfallStep[];
+  finalMethod: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Enrichment Retry Tracking
+// ---------------------------------------------------------------------------
+
+export interface EnrichmentRetryRecord {
+  leadId: string;
+  attempt: number;
+  maxRetries: number;
+  nextRetryAt: Date;
+  lastError?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Structured Logging
+// ---------------------------------------------------------------------------
+
+export interface StructuredLogEntry {
+  timestamp: string;
+  stage: string;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  leadId?: string;
+  source?: string;
+  retryEligible?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Query Retry Context
+// ---------------------------------------------------------------------------
+
+export interface QueryRetryContext {
+  previousQueries: AnnotatedQuery[];
+  resultsCount: number;
+  missingVectors: string[];
+  feedback: string;
+}
+
+// ---------------------------------------------------------------------------
+// Creative Discovery Pipeline — Query History & Research Agent Types
+// ---------------------------------------------------------------------------
+
+export interface QueryHistoryEntry {
+  id: string;
+  icpProfileId: string;
+  queryText: string;
+  vector: AnnotatedQuery['vector'];
+  executedAt: Date;
+}
+
+export interface CreativeQueryConfig extends QueryGeneratorConfig {
+  maxQueryLength: 120;
+  minQueries: 10;
+  minVectors: 3;
+  historyLookback: 200;
+  overlapThresholdPct: 50;
+  maxGenerationAttempts: 2;
+}
+
+export interface ResearchAgentCompanyResult {
+  company: string | null;
+  source: 'web_search' | 'content_extraction';
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface ResearchAgentEmailResult {
+  email: string | null;
+  hasMXRecords: boolean;
+  source: 'research_agent_web_search';
+  confidence: 'medium';
 }

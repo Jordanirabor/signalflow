@@ -279,9 +279,10 @@ describe('discoverEmail', () => {
       companyDomain: 'acme.com',
     };
     const result = await discoverEmail(prospect, cache);
-    // Single name — can't generate proper candidates
-    expect(result.email).toBeNull();
+    // Single name — generates candidates using first name as both first and last
+    expect(result.email).toBe('madonna@acme.com');
     expect(result.companyDomain).toBe('acme.com');
+    expect(result.confidence).toBe('low');
   });
 
   it('records verificationMethod as pattern_inference when no SMTP', async () => {
