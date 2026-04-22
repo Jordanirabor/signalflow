@@ -38,7 +38,7 @@ interface ICPFormProps {
 
 export default function ICPForm({ onConfirm }: ICPFormProps) {
   const { session, isLoading: sessionLoading } = useSession();
-  const { selectedProjectId, selectedProject } = useProject();
+  const { selectedProjectId, selectedProject, refreshProjects } = useProject();
   const [productDescription, setProductDescription] = useState('');
   const [generating, setGenerating] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -119,6 +119,7 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
         type: 'success',
         message: 'ICP set saved successfully. Lead scores are being recalculated.',
       });
+      refreshProjects();
       onConfirm?.();
     } catch {
       setFeedback({ type: 'error', message: 'Network error. Please try again.' });
