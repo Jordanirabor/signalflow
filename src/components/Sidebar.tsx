@@ -70,7 +70,9 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     <>
       {/* Desktop sidebar */}
       <aside className="hidden md:flex md:w-60 md:flex-col md:border-r md:bg-muted/40">
-        <div className="px-4 py-3 font-semibold text-lg tracking-tight text-primary">Moatify</div>
+        <div className="px-4 py-3 font-semibold text-lg tracking-tight text-primary">
+          SignalFlow
+        </div>
         <Separator />
         <SidebarNav />
       </aside>
@@ -79,7 +81,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       <Sheet open={isOpen} onOpenChange={onToggle}>
         <SheetContent side="left" className="w-60 p-0">
           <SheetHeader className="px-4 py-3">
-            <SheetTitle>Moatify</SheetTitle>
+            <SheetTitle>SignalFlow</SheetTitle>
           </SheetHeader>
           <Separator />
           <SidebarNav />

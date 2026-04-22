@@ -11,7 +11,7 @@ import {
   useState,
 } from 'react';
 
-const LOCAL_STORAGE_KEY = 'moatify_selected_project_id';
+const LOCAL_STORAGE_KEY = 'signalflow_selected_project_id';
 
 interface ProjectContextValue {
   projects: ICPProject[];

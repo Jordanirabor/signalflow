@@ -1,8 +1,8 @@
-# Moatify — Complete Feature Catalog & Billing Tiers
+# SignalFlow — Complete Feature Catalog & Billing Tiers
 
-## What Is Moatify?
+## What Is SignalFlow?
 
-Moatify is an autonomous go-to-market engine for founders. It discovers high-fit prospects across the open web, researches them deeply using AI, writes hyper-personalized outreach, sends it from your inbox, handles replies, and books meetings on your calendar — all on autopilot. You describe your offering and your ideal customer. Moatify does the rest.
+SignalFlow is an autonomous go-to-market engine for founders. It discovers high-fit prospects across the open web, researches them deeply using AI, writes hyper-personalized outreach, sends it from your inbox, handles replies, and books meetings on your calendar — all on autopilot. You describe your offering and your ideal customer. SignalFlow does the rest.
 
 It is not a lead database. It is not a template tool. It is a system that replaces the entire outbound workflow: prospecting, research, copywriting, sending, follow-up, and scheduling.
 
@@ -14,7 +14,7 @@ It is not a lead database. It is not a template tool. It is a system that replac
 
 | Feature                          | Description                                                                                                                                                                  |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AI-Generated ICP Profiles        | Describe your offering in plain text. Moatify generates detailed buyer personas with target roles, industries, company stages, geographies, pain points, and buying signals. |
+| AI-Generated ICP Profiles        | Describe your offering in plain text. SignalFlow generates detailed buyer personas with target roles, industries, company stages, geographies, pain points, and buying signals. |
 | Multi-ICP Support                | Generate and manage multiple distinct buyer personas per project. Each profile can be toggled active/inactive independently.                                                 |
 | Multi-Project Architecture       | Run separate campaigns for different products, services, or offerings. Each project has its own ICP profiles, leads, strategy, and pipeline scope.                           |
 | AI-Inferred Project Naming       | Projects are automatically named by AI based on your offering description. You can override with a custom name at any time.                                                  |

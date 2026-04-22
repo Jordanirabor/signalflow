@@ -401,10 +401,10 @@ async function sendTestEmail(connection: EmailConnection): Promise<void> {
   const rawMessage = [
     `From: ${connection.email}`,
     `To: ${connection.email}`,
-    `Subject: Moatify Email Connection Verified`,
+    `Subject: SignalFlow Email Connection Verified`,
     'Content-Type: text/plain; charset=utf-8',
     '',
-    'Your Gmail account has been successfully connected to Moatify. Automated outreach is now enabled.',
+    'Your Gmail account has been successfully connected to SignalFlow. Automated outreach is now enabled.',
   ].join('\r\n');
 
   const encodedMessage = Buffer.from(rawMessage).toString('base64url');

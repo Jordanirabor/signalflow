@@ -1,5 +1,5 @@
 // ============================================================
-// Moatify — Shared Types & Interfaces
+// SignalFlow — Shared Types & Interfaces
 // ============================================================
 
 // --- CRM Status ---

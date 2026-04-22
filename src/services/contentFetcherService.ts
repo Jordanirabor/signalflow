@@ -12,7 +12,7 @@ async function getCheerio() {
   return cheerio;
 }
 
-const USER_AGENT = 'Moatify-Research-Bot/1.0';
+const USER_AGENT = 'SignalFlow-Research-Bot/1.0';
 const DEFAULT_MAX_LENGTH = 5000;
 const MIN_TEXT_LENGTH = 100;
 const MAX_REDIRECTS = 3;
@@ -170,7 +170,7 @@ export function truncateText(text: string, maxLength: number = DEFAULT_MAX_LENGT
 /**
  * Checks if a URL is allowed by the site's robots.txt.
  * Caches results per domain. On fetch failure, assumes allowed (permissive default).
- * Checks directives for both `*` and `Moatify-Research-Bot` user agents.
+ * Checks directives for both `*` and `SignalFlow-Research-Bot` user agents.
  */
 export async function isAllowedByRobots(url: string): Promise<boolean> {
   try {
@@ -270,10 +270,10 @@ export function parseRobotsTxt(content: string): { userAgent: string; paths: str
 
 /**
  * Checks if a path is disallowed by the given robots.txt rules.
- * Checks rules for both `*` (wildcard) and `Moatify-Research-Bot` user agents.
+ * Checks rules for both `*` (wildcard) and `SignalFlow-Research-Bot` user agents.
  */
 function isDisallowed(rules: { userAgent: string; paths: string[] }[], path: string): boolean {
-  const relevantAgents = ['*', 'Moatify-Research-Bot'];
+  const relevantAgents = ['*', 'SignalFlow-Research-Bot'];
 
   for (const rule of rules) {
     if (relevantAgents.some((agent) => rule.userAgent.toLowerCase() === agent.toLowerCase())) {

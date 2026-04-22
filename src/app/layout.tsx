@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Moatify',
+  title: 'SignalFlow',
   description: 'GTM Intelligence Engine for early-stage founders',
 };
 
