@@ -153,7 +153,8 @@ export default function ICPForm({ onConfirm }: ICPFormProps) {
       <Card>
         <CardHeader>
           <CardTitle>
-            Generate ICP from Your Offering{selectedProject ? ` — ${selectedProject.name}` : ''}
+            Generate ICP from Your Offering
+            {selectedProject ? ` — ${selectedProject.name}` : ' — New Project'}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">

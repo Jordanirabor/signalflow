@@ -294,44 +294,65 @@ async function executeDiscoveryStage(
       lead.id,
     ]);
 
-    // Enrich the lead
-    const enrichResult = await enrichLead(lead.name, lead.company);
-    await updateLeadEnrichment(
-      lead.id,
-      enrichResult.enrichmentData,
-      enrichResult.enrichmentStatus,
-      originatingProfile,
-      enrichResult.emailDiscoveryMethod,
-      enrichResult.emailDiscoverySteps,
-    );
-
-    // Trigger correlation scoring after enrichment completes (Req 3.1)
+    // Enrich the lead (with timeout to prevent hanging)
     try {
-      const enrichedICP = await getEnrichedICP(founderId);
-      if (enrichedICP) {
-        const researchProfile: ResearchProfile = (await getResearchProfile(lead.id)) ?? {
-          leadId: lead.id,
-          topicsOfInterest: [],
-          currentChallenges: [],
-          recentActivity: [],
-          publishedContentSummaries: [],
-          overallSentiment: 'neutral',
-          sourcesUsed: [],
-          sourcesUnavailable: [],
-          researchedAt: new Date(),
-        };
-        await scoreAndStoreCorrelation(lead, researchProfile, enrichedICP);
-      }
-    } catch (error) {
+      await withTimeout(
+        (async () => {
+          const enrichResult = await enrichLead(lead.name, lead.company);
+          await updateLeadEnrichment(
+            lead.id,
+            enrichResult.enrichmentData,
+            enrichResult.enrichmentStatus,
+            originatingProfile,
+            enrichResult.emailDiscoveryMethod,
+            enrichResult.emailDiscoverySteps,
+          );
+
+          // Trigger correlation scoring after enrichment completes (Req 3.1)
+          try {
+            const enrichedICP = await getEnrichedICP(founderId);
+            if (enrichedICP) {
+              const researchProfile: ResearchProfile = (await getResearchProfile(lead.id)) ?? {
+                leadId: lead.id,
+                topicsOfInterest: [],
+                currentChallenges: [],
+                recentActivity: [],
+                publishedContentSummaries: [],
+                overallSentiment: 'neutral',
+                sourcesUsed: [],
+                sourcesUnavailable: [],
+                researchedAt: new Date(),
+              };
+              await scoreAndStoreCorrelation(lead, researchProfile, enrichedICP);
+            }
+          } catch (error) {
+            logStructured({
+              timestamp: new Date().toISOString(),
+              stage: 'discovery',
+              level: 'error',
+              message: `Correlation scoring failed for lead "${lead.name}": ${error instanceof Error ? error.message : String(error)}`,
+              leadId: lead.id,
+              metadata: {
+                leadName: lead.name,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              retryEligible: true,
+            });
+          }
+        })(),
+        120_000,
+        `enrichment for "${lead.name}"`,
+      );
+    } catch (err) {
       logStructured({
         timestamp: new Date().toISOString(),
         stage: 'discovery',
         level: 'error',
-        message: `Correlation scoring failed for lead "${lead.name}": ${error instanceof Error ? error.message : String(error)}`,
+        message: `Enrichment failed/timed out for "${lead.name}": ${err instanceof Error ? err.message : String(err)}`,
         leadId: lead.id,
         metadata: {
           leadName: lead.name,
-          error: error instanceof Error ? error.message : String(error),
+          error: err instanceof Error ? err.message : String(err),
         },
         retryEligible: true,
       });
@@ -553,6 +574,26 @@ export function generateStaggerDelay(): number {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run a promise with a timeout. Rejects with a TimeoutError if the promise
+ * does not resolve within the given number of milliseconds.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**

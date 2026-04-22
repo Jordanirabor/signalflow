@@ -59,7 +59,8 @@ export function ProjectSelector() {
 
   const handleValueChange = (value: string) => {
     if (value === NEW_PROJECT_VALUE) {
-      // Navigate to ICP page where project creation happens
+      // Clear selection so ICPForm creates a new project on confirm
+      setSelectedProject(null);
       window.location.href = '/icp';
       return;
     }
