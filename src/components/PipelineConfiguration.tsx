@@ -45,7 +45,7 @@ export default function PipelineConfiguration() {
   const [runIntervalMinutes, setRunIntervalMinutes] = useState(60);
   const [dailyDiscoveryCap, setDailyDiscoveryCap] = useState(50);
   const [maxFollowUps, setMaxFollowUps] = useState(3);
-  const [minLeadScore, setMinLeadScore] = useState(50);
+  const [minLeadScore, setMinLeadScore] = useState(20);
   const [sequenceCadenceInput, setSequenceCadenceInput] = useState('3, 5, 7');
   const [tonePreference, setTonePreference] = useState<TonePreference>('warm');
 

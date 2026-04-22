@@ -39,7 +39,7 @@ const DEFAULTS: PipelineConfig = {
   businessDays: [1, 2, 3, 4, 5],
   timezone: 'America/New_York',
   dailyDiscoveryCap: 50,
-  minLeadScore: 10,
+  minLeadScore: 20,
   maxFollowUps: 3,
   sequenceCadenceDays: [3, 5, 7],
   tonePreference: 'warm',
